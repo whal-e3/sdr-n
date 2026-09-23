@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "sequence": 1,
+  "generatedAt": "2026-09-23T11:35:00.000Z",
+  "sourceUpdatedAt": "2026-09-22T23:00:11.712Z",
+  "satellites": [
+    {
+      "noradId": "25544",
+      "name": "ISS",
+      "aliases": ["ISS (ZARYA)"],
+      "omm": {
+        "OBJECT_NAME": "ISS (ZARYA)",
+        "OBJECT_ID": "1998-067A",
+        "EPOCH": "2026-09-22T20:26:37.026816",
+        "MEAN_MOTION": 15.49234213,
+        "ECCENTRICITY": 0.00047339,
+        "INCLINATION": 51.6316,
+        "RA_OF_ASC_NODE": 176.7315,
+        "ARG_OF_PERICENTER": 169.8211,
+        "MEAN_ANOMALY": 190.2874,
+        "EPHEMERIS_TYPE": 0,
+        "CLASSIFICATION_TYPE": "U",
+        "NORAD_CAT_ID": "25544",
+        "ELEMENT_SET_NO": 999,
+        "REV_AT_EPOCH": 58689,
+        "BSTAR": 0.00014639046,
+        "MEAN_MOTION_DOT": 0.00007689,
+        "MEAN_MOTION_DDOT": 0
+      },
+      "transmitters": [
+        {
+          "id": "PjfcFc4PZ8M8n3thuyA6x9",
+          "description": "Mode V/V FM (crew R2+3)",
+          "frequencyHz": 145800000,
+          "bandwidthHz": 25000,
+          "mode": "FM",
+          "baud": null,
+          "status": "active",
+          "verifiedAt": "2019-06-16T08:49:47.011Z",
+          "decoderId": "AUDIO_NFM",
+          "captureRateSps": 1024000,
+          "antenna": { "band": "2m", "description": "VHF satellite antenna for 145.800 MHz" },
+          "policy": "amateur",
+          "evidenceUrls": ["https://www.ariss.org/contact-the-iss.html"]
+        },
+        {
+          "id": "ZJxCeQmih9zDfYNVrB4wRN",
+          "description": "Mode V APRS",
+          "frequencyHz": 145825000,
+          "bandwidthHz": 12000,
+          "mode": "AFSK",
+          "baud": 1200,
+          "status": "active",
+          "verifiedAt": "2019-06-16T08:49:33.586Z",
+          "decoderId": "AX25_AFSK1200",
+          "captureRateSps": 1024000,
+          "antenna": { "band": "2m", "description": "VHF satellite antenna for 145.825 MHz" },
+          "policy": "amateur",
+          "evidenceUrls": ["https://www.ariss.org/contact-the-iss.html"]
+        }
+      ]
+    },
+    {
+      "noradId": "40069",
+      "name": "METEOR M-2",
+      "aliases": ["METEOR-M 2"],
+      "omm": {
+        "OBJECT_NAME": "METEOR-M 2",
+        "OBJECT_ID": "2014-037A",
+        "EPOCH": "2026-09-22T21:59:49.863840",
+        "MEAN_MOTION": 14.21484739,
+        "ECCENTRICITY": 0.00068358,
+        "INCLINATION": 98.5243,
+        "RA_OF_ASC_NODE": 238.2511,
+        "ARG_OF_PERICENTER": 107.9454,
+        "MEAN_ANOMALY": 252.247,
+        "EPHEMERIS_TYPE": 0,
+        "CLASSIFICATION_TYPE": "U",
+        "NORAD_CAT_ID": "40069",
+        "ELEMENT_SET_NO": 999,
+        "REV_AT_EPOCH": 63320,
+        "BSTAR": 0.000012338608,
+        "MEAN_MOTION_DOT": -0.00000015,
+        "MEAN_MOTION_DDOT": 0
+      },
+      "transmitters": [
+        {
+          "id": "CojkGDaq3u42nRdLdfczng",
+          "description": "LRPT 1",
+          "frequencyHz": 137100000,
+          "bandwidthHz": 200000,
+          "mode": "LRPT",
+          "baud": 72000,
+          "status": "active",
+          "verifiedAt": "2020-05-07T22:38:43.359Z",
+          "decoderId": "METEOR_LRPT_72K",
+          "captureRateSps": 2400000,
+          "antenna": { "band": "137MHz", "description": "137 MHz weather-satellite V-dipole or QFH" },
+          "policy": "public",
+          "evidenceUrls": ["https://db.satnogs.org/satellite/40069/"]
+        }
+      ]
+    },
+    {
+      "noradId": "59051",
+      "name": "METEOR M2-4",
+      "aliases": ["METEOR-M2 4"],
+      "omm": {
+        "OBJECT_NAME": "METEOR-M2 4",
+        "OBJECT_ID": "2024-039A",
+        "EPOCH": "2026-09-22T23:00:11.712096",
+        "MEAN_MOTION": 14.22438099,
+        "ECCENTRICITY": 0.00059731,
+        "INCLINATION": 98.7131,
+        "RA_OF_ASC_NODE": 224.0772,
+        "ARG_OF_PERICENTER": 244.1057,
+        "MEAN_ANOMALY": 115.9506,
+        "EPHEMERIS_TYPE": 0,
+        "CLASSIFICATION_TYPE": "U",
+        "NORAD_CAT_ID": "59051",
+        "ELEMENT_SET_NO": 999,
+        "REV_AT_EPOCH": 13316,
+        "BSTAR": 0.000020528632,
+        "MEAN_MOTION_DOT": 0.00000002,
+        "MEAN_MOTION_DDOT": 0
+      },
+      "transmitters": [
+        {
+          "id": "CjvA8tYsAqC5f7jxV8D6T9",
+          "description": "LRPT S-E RHCP D 80 kbps",
+          "frequencyHz": 137900000,
+          "bandwidthHz": 220000,
+          "mode": "LRPT",
+          "baud": 80000,
+          "status": "active",
+          "verifiedAt": "2024-02-23T14:08:43.386Z",
+          "decoderId": "METEOR_LRPT_80K",
+          "captureRateSps": 2400000,
+          "antenna": { "band": "137MHz", "description": "137 MHz weather-satellite V-dipole or QFH" },
+          "policy": "public",
+          "evidenceUrls": ["https://db.satnogs.org/satellite/59051/"]
+        }
+      ]
+    }
+  ],
+  "attribution": [
+    "Orbital elements: CelesTrak (https://celestrak.org/).",
+    "Satellite and transmitter metadata: SatNOGS DB, CC BY-SA 4.0 (https://db.satnogs.org/).",
+    "Decoder eligibility: Satellite Eavesdropper curated public-signal profiles."
+  ]
+}

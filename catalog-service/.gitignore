@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+*.log
+*.pem
+*.key
+*.pkcs8
+*.pkcs8.b64
+.dev.vars

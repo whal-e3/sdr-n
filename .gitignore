@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+*.iml
+local.properties
+**/build/
+.cxx/
+*.jks
+*.keystore
+catalog-service/node_modules/
+catalog-service/.wrangler/
+catalog-service/.dev.vars
+experimental/lrpt/build-*/
