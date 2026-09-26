@@ -11,6 +11,40 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kMarkStep = 2.0 * kPi * 1200.0 / 48000.0;
 constexpr double kSpaceStep = 2.0 * kPi * 2200.0 / 48000.0;
 constexpr std::uint8_t kHdlcFlag = 0x7e;
+
+// AX.25 has destination and source address subfields, each seven octets;
+// optional repeater subfields follow. Call signs are upper-case letters or
+// digits, padded with spaces, shifted left one bit. The low bit of the final
+// SSID octet terminates the address field. A valid FCS alone proves only that
+// HDLC bytes were received, not that they form an AX.25 packet.
+bool hasAx25Address(const std::uint8_t* frame, std::size_t body_length) {
+    std::size_t offset = 0;
+    std::size_t address_count = 0;
+    while (offset + 7 < body_length) { // Leave at least one control octet.
+        bool has_call_sign = false;
+        bool padding_started = false;
+        for (std::size_t i = 0; i < 6; ++i) {
+            const auto encoded = frame[offset + i];
+            if ((encoded & 1u) != 0) return false;
+            const auto character = static_cast<char>(encoded >> 1);
+            if (character == ' ') {
+                padding_started = true;
+            } else if (!padding_started &&
+                       ((character >= 'A' && character <= 'Z') ||
+                        (character >= '0' && character <= '9'))) {
+                has_call_sign = true;
+            } else {
+                return false;
+            }
+        }
+        if (!has_call_sign) return false;
+        ++address_count;
+        const bool last_address = (frame[offset + 6] & 1u) != 0;
+        offset += 7;
+        if (last_address) return address_count >= 2;
+    }
+    return false;
+}
 }  // namespace
 
 Ax25Afsk1200Decoder::Ax25Afsk1200Decoder() {
@@ -26,6 +60,7 @@ void Ax25Afsk1200Decoder::reset() {
     last_frame_end_sample_ = 0;
     sample_count_ = 0;
     valid_frame_count_ = 0;
+    flag_candidate_count_ = 0;
     bad_fcs_count_ = 0;
     oversized_frame_count_ = 0;
     mark_cos_ = 1.0;
@@ -165,6 +200,7 @@ void Ax25Afsk1200Decoder::receiveDataBit(PhaseState& phase,
 }
 
 void Ax25Afsk1200Decoder::onFlag(PhaseState& phase) {
+    ++flag_candidate_count_;
     // AX.25 needs at least destination and source addresses (7 bytes each),
     // one control byte, and two FCS bytes. This also limits random-noise
     // false positives when many symbol phases are searched in parallel.
@@ -176,21 +212,23 @@ void Ax25Afsk1200Decoder::onFlag(PhaseState& phase) {
             static_cast<std::uint16_t>(phase.bytes[data_length + 1] << 8);
         if (crc16X25(phase.bytes.data(), data_length) == received_fcs) {
             phase.bytes.resize(data_length);
-            // Parallel symbol phases can decode the same frame. Their flag
-            // endpoints differ by at most one symbol, so suppress only that
-            // near-simultaneous duplicate, not later legitimate repeats.
-            const bool duplicate =
-                sample_count_ >= last_frame_end_sample_ &&
-                sample_count_ - last_frame_end_sample_ <= 80 &&
-                phase.bytes == last_frame_;
-            if (!duplicate) {
-                last_frame_ = phase.bytes;
-                last_frame_end_sample_ = sample_count_;
-                ++valid_frame_count_;
-                if (frames_.size() == kMaxQueuedFrames) {
-                    frames_.pop_front();
+            if (hasAx25Address(phase.bytes.data(), data_length)) {
+                // Parallel symbol phases can decode the same frame. Their
+                // flag endpoints differ by at most one symbol, so suppress
+                // only that duplicate, not later legitimate repeats.
+                const bool duplicate =
+                    sample_count_ >= last_frame_end_sample_ &&
+                    sample_count_ - last_frame_end_sample_ <= 80 &&
+                    phase.bytes == last_frame_;
+                if (!duplicate) {
+                    last_frame_ = phase.bytes;
+                    last_frame_end_sample_ = sample_count_;
+                    ++valid_frame_count_;
+                    if (frames_.size() == kMaxQueuedFrames) {
+                        frames_.pop_front();
+                    }
+                    frames_.push_back({std::move(phase.bytes), sample_count_});
                 }
-                frames_.push_back({std::move(phase.bytes), sample_count_});
             }
         } else {
             ++bad_fcs_count_;

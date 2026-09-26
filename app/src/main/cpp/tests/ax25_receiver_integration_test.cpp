@@ -61,7 +61,8 @@ std::vector<std::uint8_t> framedBits(const std::vector<std::uint8_t>& body) {
     return bits;
 }
 
-std::vector<std::uint8_t> fmIq(const std::vector<std::uint8_t>& bits) {
+std::vector<std::uint8_t> fmIq(const std::vector<std::uint8_t>& bits,
+                               double raw_carrier_hz = 0.0) {
     std::vector<std::uint8_t> tones;
     tones.reserve(bits.size());
     std::uint8_t tone = 0;
@@ -79,7 +80,8 @@ std::vector<std::uint8_t> fmIq(const std::vector<std::uint8_t>& bits) {
         const double audio_hz = tones[bit_index] ? 2200.0 : 1200.0;
         audio_phase += 2.0 * kPi * audio_hz / kIqRate;
         if (audio_phase > 2.0 * kPi) audio_phase -= 2.0 * kPi;
-        fm_phase += 2.0 * kPi * 3000.0 * std::sin(audio_phase) / kIqRate;
+        fm_phase += 2.0 * kPi * (raw_carrier_hz +
+            3000.0 * std::sin(audio_phase)) / kIqRate;
         if (fm_phase > 2.0 * kPi) fm_phase -= 2.0 * kPi;
         iq[2 * i] = static_cast<std::uint8_t>(std::lround(
             127.5 + 80.0 * std::cos(fm_phase)));
@@ -130,10 +132,32 @@ int main() {
     CHECK(receiver.readPacket(packet));
     CHECK(packet == body);
     CHECK(!receiver.readPacket(packet));
+    const auto decoded = receiver.decoderStats();
+    CHECK(decoded.hdlc_flag_candidates > 0);
+    CHECK(decoded.verified_frames == 1);
 
     feed(receiver, iq);
     CHECK(receiver.setMode(static_cast<int>(
         satellite_rx::ReceiverMode::SpectrumOnly)) == 0);
     CHECK(!receiver.readPacket(packet));
+    CHECK(receiver.decoderStats().verified_frames == 0);
+
+    // A real offset FM packet follows a long modulated preamble. The AFC
+    // must settle using IQ evidence without corrupting CRC-verified decode.
+    std::vector<std::uint8_t> offset_bits;
+    for (int i = 0; i < 180; ++i) flag(offset_bits);
+    const auto framed = framedBits(body);
+    offset_bits.insert(offset_bits.end(), framed.begin(), framed.end());
+    satellite_rx::ReceiverCore offset_receiver(kIqRate);
+    CHECK(offset_receiver.configureNfm(5000.0, 0.0) == 0);
+    CHECK(offset_receiver.setMode(static_cast<int>(
+        satellite_rx::ReceiverMode::Ax25Afsk1200)) == 0);
+    offset_receiver.setCorrections(145825000.0, 0.0, 500.0);
+    feed(offset_receiver, fmIq(offset_bits, 2500.0));
+    CHECK(offset_receiver.afcStats().tracking);
+    CHECK(std::abs(offset_receiver.afcStats().applied_hz - 2000.0) < 200.0);
+    CHECK(offset_receiver.readPacket(packet));
+    CHECK(packet == body);
+    CHECK(offset_receiver.decoderStats().verified_frames >= 1);
     return 0;
 }

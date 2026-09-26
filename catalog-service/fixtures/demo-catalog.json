@@ -146,6 +146,6 @@
   "attribution": [
     "Orbital elements: CelesTrak (https://celestrak.org/).",
     "Satellite and transmitter metadata: SatNOGS DB, CC BY-SA 4.0 (https://db.satnogs.org/).",
-    "Decoder eligibility: Satellite Eavesdropper curated public-signal profiles."
+    "Decoder eligibility: OrbitScope curated public-signal profiles."
   ]
 }

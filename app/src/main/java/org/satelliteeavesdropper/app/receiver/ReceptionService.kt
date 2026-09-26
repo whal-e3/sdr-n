@@ -17,48 +17,116 @@ import android.os.SystemClock
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.satelliteeavesdropper.app.NativeReceiver
+import org.satelliteeavesdropper.app.R
 import org.satelliteeavesdropper.orbit.ObserverLocation
 import org.satelliteeavesdropper.orbit.OmmElements
+import org.satelliteeavesdropper.orbit.SatelliteLook
 import org.satelliteeavesdropper.orbit.SatelliteOrbit
 import java.time.Instant
 
 data class ReceptionSnapshot(
     val state: String = "Idle",
+    /** Unique receive session; observer updates must match this and the target NORAD ID. */
+    val sessionId: String = "",
     val device: String = "",
     val spectrum: List<Float> = emptyList(),
+    val iqSamples: List<Float> = emptyList(),
+    /** Oldest row first; each row is 128 FFT-bin maxima in dBFS. */
+    val spectrogram: List<List<Float>> = emptyList(),
     val acceptedSamples: Long = 0,
     val droppedSamples: Long = 0,
+    val processedSamples: Long = 0,
+    val sampleRateSps: Int = 0,
+    val targetNoradId: String = "",
+    val targetName: String = "",
+    /** Physical RF tuner center; Doppler correction is applied in baseband. */
+    val rfCenterHz: Long = 0,
+    val predictedDopplerHz: Double = 0.0,
+    /** Conditional carrier-like FM estimate from channel-filtered IQ. */
+    val afcTracking: Boolean = false,
+    val afcAppliedHz: Double = 0.0,
+    val afcLastResidualHz: Double = 0.0,
+    val lookAzimuthDegrees: Double? = null,
+    val lookElevationDegrees: Double? = null,
+    val observerFeedState: ObserverFeedState = ObserverFeedState.FIXED,
+    val observerFixAgeSeconds: Long? = null,
+    val decoderId: String = "",
+    val hdlcFlagCandidates: Long = 0,
+    val failedFrameCrc: Long = 0,
+    /** Count of CRC-verified AX.25 frames found by the native decoder. */
+    val verifiedFrameCount: Long = 0,
+    /** Monotonic age of the latest verified frame, updated only when its count advances. */
+    val latestVerifiedFrameAgeSeconds: Long? = null,
+    val audioFramesPlayed: Long = 0,
     val packets: List<String> = emptyList(),
     val error: String? = null,
-)
+) {
+    /** Center of the digitally corrected FFT, including predicted Doppler. */
+    val displayCenterHz: Double get() = rfCenterHz + predictedDopplerHz
+
+    /** Keep final sample and decoder evidence visible after a receive session ends. */
+    fun stopped(): ReceptionSnapshot = when (state) {
+        "Starting", "Receiving" -> copy(state = "Stopped")
+        else -> this
+    }
+}
 
 object ReceptionState {
     private val mutable = MutableStateFlow(ReceptionSnapshot())
     val snapshots = mutable.asStateFlow()
+    @Volatile private var activeObserverSession: LiveObserverSession? = null
+    private var activityVisible = false
     fun publish(snapshot: ReceptionSnapshot) { mutable.value = snapshot }
+    @Synchronized
+    internal fun beginObserverSession(session: LiveObserverSession) {
+        activeObserverSession = session
+        if (!activityVisible) session.pause(session.sessionId, session.targetNoradId, unavailable = false)
+    }
+    internal fun endObserverSession(session: LiveObserverSession) {
+        synchronized(this) {
+            if (activeObserverSession === session) activeObserverSession = null
+        }
+    }
+    @Synchronized
+    fun clearObserverSession() { activeObserverSession = null }
+    @Synchronized
+    fun updateObserver(
+        sessionId: String, targetNoradId: String, observer: ObserverLocation,
+        fixElapsedMs: Long, nowElapsedMs: Long,
+    ): Boolean = if (activityVisible)
+        activeObserverSession?.update(sessionId, targetNoradId, observer, fixElapsedMs, nowElapsedMs) ?: false
+    else false
+    fun pauseObserver(sessionId: String, targetNoradId: String, unavailable: Boolean): Boolean =
+        activeObserverSession?.pause(sessionId, targetNoradId, unavailable) ?: false
+    @Synchronized
+    fun setActivityVisible(visible: Boolean) {
+        activityVisible = visible
+        if (!visible) activeObserverSession?.let {
+            it.pause(it.sessionId, it.targetNoradId, unavailable = false)
+        }
+    }
 }
 
 /** Owns the Android USB grant and the native receive loop for a manually started session. */
 class ReceptionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var worker: Job? = null
+    private val sessions = ReceiverSessionCoordinator(scope)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            worker?.cancel()
+            ReceptionState.clearObserverSession()
+            sessions.cancel()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -73,10 +141,23 @@ class ReceptionService : Service() {
         val deviceType = intent.getIntExtra(EXTRA_DEVICE_TYPE, 0)
         val frequencyHz = intent.getLongExtra(EXTRA_FREQUENCY_HZ, 0)
         val sampleRate = intent.getIntExtra(EXTRA_SAMPLE_RATE, 0)
-        val audioEnabled = intent.getStringExtra(EXTRA_DECODER_ID) == "AUDIO_NFM"
-        val packetEnabled = intent.getStringExtra(EXTRA_DECODER_ID) == "AX25_AFSK1200"
+        val decoderId = intent.getStringExtra(EXTRA_DECODER_ID).orEmpty()
+        val audioEnabled = decoderId == "AUDIO_NFM"
+        val packetEnabled = decoderId == "AX25_AFSK1200"
+        val targetNoradId = intent.getStringExtra(EXTRA_TARGET_NORAD).orEmpty()
+        val targetName = intent.getStringExtra(EXTRA_TARGET_NAME).orEmpty()
+        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID).orEmpty()
+        val automaticObserver = intent.getBooleanExtra(EXTRA_AUTOMATIC_OBSERVER, false)
+        val initialFixElapsedMs = intent.getLongExtra(EXTRA_INITIAL_FIX_ELAPSED_MS, -1L)
+            .takeIf { it >= 0 }
+        if (decoderId !in setOf("", "AUDIO_NFM", "AX25_AFSK1200")) {
+            ReceptionState.publish(ReceptionSnapshot(error = "Decoder $decoderId is not implemented on Android"))
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         val ommJson = intent.getStringExtra(EXTRA_OMM_JSON)
-        if (deviceType !in 1..2 || frequencyHz <= 0 || sampleRate <= 0 || ommJson == null) {
+        if (deviceType !in 1..2 || frequencyHz <= 0 || sampleRate <= 0 || ommJson == null ||
+            sessionId.isBlank() || targetNoradId.isBlank()) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -95,6 +176,11 @@ class ReceptionService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        if (automaticObserver && !isUsableReceiveFix(initialFixElapsedMs, SystemClock.elapsedRealtime())) {
+            ReceptionState.publish(ReceptionSnapshot(error = "Automatic GPS fix expired before reception started"))
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
 
         val manager = getSystemService(Context.USB_SERVICE) as UsbManager
         val usbDevice = manager.deviceList[deviceName]
@@ -110,13 +196,17 @@ class ReceptionService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        worker?.cancel()
-        worker = scope.launch {
+        val observerSession = LiveObserverSession(
+            sessionId, targetNoradId, automaticObserver, tracking.second,
+            initialFixElapsedMs, SystemClock.elapsedRealtime(),
+        )
+        ReceptionState.beginObserverSession(observerSession)
+        sessions.replace {
             val connection = manager.openDevice(usbDevice)
             if (connection == null) {
                 ReceptionState.publish(ReceptionSnapshot(error = "Could not open the USB device"))
                 stopSelf(startId)
-                return@launch
+                return@replace
             }
             var handle = 0L
             var audioTrack: AudioTrack? = null
@@ -157,22 +247,41 @@ class ReceptionService : Service() {
                 }
                 val openCode = NativeReceiver.nativeOpenUsb(handle, connection.fileDescriptor, deviceType)
                 require(openCode == 0) { "USB receiver unavailable (code $openCode)" }
-                fun updateDoppler() {
-                    val look = tracking.first.lookFrom(tracking.second, Instant.now())
+                fun updateDoppler(): Pair<SatelliteLook, ObserverTracking> {
+                    val observerTracking = observerSession.current(SystemClock.elapsedRealtime())
+                    val look = tracking.first.lookFrom(observerTracking.location, Instant.now())
                     NativeReceiver.nativeSetCorrections(
                         handle,
                         frequencyHz.toDouble(),
                         0.0,
                         look.dopplerShiftHz(frequencyHz.toDouble()),
                     )
+                    return look to observerTracking
                 }
-                updateDoppler()
+                val firstLook = updateDoppler()
                 val startCode = NativeReceiver.nativeStartRx(handle, frequencyHz)
                 require(startCode == 0) { "Could not start receive stream (code $startCode)" }
-                ReceptionState.publish(ReceptionSnapshot(state = "Receiving", device = usbDevice.productName ?: deviceName))
+                val receiverName = usbDevice.productName ?: deviceName
+                val initial = ReceptionSnapshot(
+                    state = "Starting", sessionId = sessionId, device = receiverName, sampleRateSps = sampleRate,
+                    targetNoradId = targetNoradId, targetName = targetName,
+                    rfCenterHz = frequencyHz, decoderId = decoderId,
+                    predictedDopplerHz = firstLook.first.dopplerShiftHz(frequencyHz.toDouble()),
+                    lookAzimuthDegrees = firstLook.first.azimuthDegrees,
+                    lookElevationDegrees = firstLook.first.elevationDegrees,
+                    observerFeedState = firstLook.second.feedState,
+                    observerFixAgeSeconds = firstLook.second.fixAgeSeconds,
+                )
+                ReceptionState.publish(initial)
                 val pcm = if (audioEnabled) ShortArray(2_048) else null
                 val packets = ArrayDeque<String>()
+                val waterfall = ArrayDeque<List<Float>>()
+                val frameEvidence = FrameEvidence()
                 var nextDisplayAt = 0L
+                var lastAccepted = 0L
+                var lastProcessed = 0L
+                var lastProgressAt = SystemClock.elapsedRealtime()
+                var audioFramesPlayed = 0L
                 while (isActive) {
                     if (packetEnabled) {
                         var drained = 0
@@ -185,16 +294,59 @@ class ReceptionService : Service() {
                     }
                     val now = SystemClock.elapsedRealtime()
                     if (now >= nextDisplayAt) {
-                        updateDoppler()
+                        val look = updateDoppler()
                         val bins = NativeReceiver.nativeSpectrum(handle)
+                        val iq = NativeReceiver.nativeIqSnapshot(handle)
                         val stats = NativeReceiver.nativeStats(handle)
+                        val decoderStats = if (packetEnabled) NativeReceiver.nativeDecoderStats(handle) else longArrayOf()
+                        val verifiedFrames = decoderStats.getOrElse(2) { 0 }
+                        val afcStats = if (audioEnabled || packetEnabled)
+                            NativeReceiver.nativeAfcStats(handle) else doubleArrayOf()
+                        val accepted = stats.getOrElse(0) { 0 }
+                        val processed = stats.getOrElse(2) { 0 }
+                        if (accepted > lastAccepted && processed > lastProcessed) {
+                            lastProgressAt = now
+                        }
+                        if (now - lastProgressAt > 3_500) {
+                            error(if (accepted == 0L) "Receive stream produced no IQ samples" else
+                                "Receive stream stalled: IQ sample count stopped advancing")
+                        }
+                        if (processed > lastProcessed && bins.size == 256) {
+                            waterfall.addLast(List(128) { bin -> maxOf(bins[2 * bin], bins[2 * bin + 1]) })
+                            while (waterfall.size > 48) waterfall.removeFirst()
+                        }
+                        lastAccepted = accepted
+                        lastProcessed = processed
                         ReceptionState.publish(
                             ReceptionSnapshot(
-                                state = "Receiving",
-                                device = (usbDevice.productName ?: deviceName) + if (audioEnabled) " · NFM audio" else "",
+                                state = if (processed > 0) "Receiving" else "Starting",
+                                sessionId = sessionId,
+                                device = receiverName,
                                 spectrum = bins.toList(),
-                                acceptedSamples = stats.getOrElse(0) { 0 },
+                                iqSamples = if (processed > 0) iq.toList() else emptyList(),
+                                spectrogram = waterfall.toList(),
+                                acceptedSamples = accepted,
                                 droppedSamples = stats.getOrElse(1) { 0 },
+                                processedSamples = processed,
+                                sampleRateSps = sampleRate,
+                                targetNoradId = targetNoradId,
+                                targetName = targetName,
+                                rfCenterHz = frequencyHz,
+                                predictedDopplerHz = look.first.dopplerShiftHz(frequencyHz.toDouble()),
+                                afcTracking = afcStats.getOrElse(0) { 0.0 } > 0.5,
+                                afcAppliedHz = afcStats.getOrElse(1) { 0.0 },
+                                afcLastResidualHz = afcStats.getOrElse(2) { 0.0 },
+                                lookAzimuthDegrees = look.first.azimuthDegrees,
+                                lookElevationDegrees = look.first.elevationDegrees,
+                                observerFeedState = look.second.feedState,
+                                observerFixAgeSeconds = look.second.fixAgeSeconds,
+                                decoderId = decoderId,
+                                hdlcFlagCandidates = decoderStats.getOrElse(0) { 0 },
+                                failedFrameCrc = decoderStats.getOrElse(1) { 0 },
+                                verifiedFrameCount = verifiedFrames,
+                                latestVerifiedFrameAgeSeconds =
+                                    frameEvidence.latestFrameAgeSeconds(verifiedFrames, now),
+                                audioFramesPlayed = audioFramesPlayed,
                                 packets = packets.toList(),
                             ),
                         )
@@ -209,15 +361,18 @@ class ReceptionService : Service() {
                                 val step = audioTrack!!.write(pcm, written, count - written, AudioTrack.WRITE_BLOCKING)
                                 require(step > 0) { "Audio output failed (code $step)" }
                                 written += step
+                                audioFramesPlayed += step
                             }
                         } else delay(10)
                     } else delay(100)
                 }
             } catch (error: kotlinx.coroutines.CancellationException) {
-                ReceptionState.publish(ReceptionSnapshot())
+                ReceptionState.publish(ReceptionState.snapshots.value.stopped())
                 throw error
             } catch (error: Exception) {
-                ReceptionState.publish(ReceptionSnapshot(error = error.message ?: "Receive session failed"))
+                ReceptionState.publish(ReceptionState.snapshots.value.copy(
+                    state = "Stopped", error = error.message ?: "Receive session failed",
+                ))
             } finally {
                 audioTrack?.let {
                     runCatching { it.pause() }
@@ -233,21 +388,21 @@ class ReceptionService : Service() {
                 connection.close()
                 stopSelf(startId)
             }
-        }
+        }.invokeOnCompletion { ReceptionState.endObserverSession(observerSession) }
         return START_NOT_STICKY
     }
 
     private fun startForegroundSession(deviceName: String, audioEnabled: Boolean) {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Satellite reception", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.receiver_notification_channel), NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(
             this, 1, Intent(this, ReceptionService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("Satellite receiver active")
-            .setContentText("Receiving from $deviceName")
+            .setContentTitle(getString(R.string.receiver_notification_title))
+            .setContentText(getString(R.string.receiver_notification_device, deviceName))
             .setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
             .build()
@@ -257,7 +412,7 @@ class ReceptionService : Service() {
     }
 
     override fun onDestroy() {
-        worker?.cancel()
+        sessions.cancel()
         scope.cancel()
         super.onDestroy()
     }
@@ -274,6 +429,11 @@ class ReceptionService : Service() {
         const val EXTRA_LONGITUDE = "longitude"
         const val EXTRA_ALTITUDE = "altitude"
         const val EXTRA_DECODER_ID = "decoder_id"
+        const val EXTRA_TARGET_NORAD = "target_norad"
+        const val EXTRA_TARGET_NAME = "target_name"
+        const val EXTRA_SESSION_ID = "session_id"
+        const val EXTRA_AUTOMATIC_OBSERVER = "automatic_observer"
+        const val EXTRA_INITIAL_FIX_ELAPSED_MS = "initial_fix_elapsed_ms"
         private const val CHANNEL = "reception"
         private const val NOTIFICATION_ID = 1001
     }

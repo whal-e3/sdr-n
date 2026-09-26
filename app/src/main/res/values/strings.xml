@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OrbitScope</string>
+    <string name="receiver_notification_channel">OrbitScope reception</string>
+    <string name="receiver_notification_title">OrbitScope receiver active</string>
+    <string name="receiver_notification_device">Receiving from %1$s</string>
+</resources>

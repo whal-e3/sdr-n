@@ -42,34 +42,66 @@ class SatelliteOrbit internal constructor(private val source: TemeStateProvider)
         var beganBeforeWindow = aos != null
         var sampledPeak: SatelliteLook? = if (aos != null) previousLook else null
 
-        while (previousTime.isBefore(end)) {
-            val candidate = previousTime.plusSeconds(stepSeconds.toLong())
-            val nextTime = if (candidate.isAfter(end)) end else candidate
-            val nextLook = look(nextTime)
-
-            if (!above(previousLook) && above(nextLook)) {
-                aos = refineCrossing(previousTime, nextTime, minElevationDegrees, true, ::look)
+        fun consume(time: Instant, sample: SatelliteLook) {
+            if (!above(previousLook) && above(sample)) {
+                aos = refineCrossing(previousTime, time, minElevationDegrees, true, ::look)
                 beganBeforeWindow = false
-                sampledPeak = look(aos)
+                sampledPeak = look(aos!!)
             }
-            if (aos != null && above(nextLook) && (sampledPeak == null ||
-                        nextLook.elevationDegrees > sampledPeak.elevationDegrees)) {
-                sampledPeak = nextLook
+            if (aos != null && above(sample) && (sampledPeak == null ||
+                        sample.elevationDegrees > sampledPeak!!.elevationDegrees)) {
+                sampledPeak = sample
             }
-            if (above(previousLook) && !above(nextLook)) {
-                val los = refineCrossing(previousTime, nextTime, minElevationDegrees, false, ::look)
+            if (above(previousLook) && !above(sample)) {
+                val los = refineCrossing(previousTime, time, minElevationDegrees, false, ::look)
                 passes += makePass(aos ?: previousTime, los, sampledPeak ?: previousLook,
                     beganBeforeWindow, false, stepSeconds, ::look)
                 aos = null
                 sampledPeak = null
             }
-
-            previousTime = nextTime
-            previousLook = nextLook
+            previousTime = time
+            previousLook = sample
         }
 
-        if (aos != null) {
-            passes += makePass(aos, end, sampledPeak ?: previousLook,
+        /**
+         * A coarse interval can contain a short rise and set even when both endpoints are below
+         * the horizon. Probe only intervals that can plausibly reach the threshold. For a bound
+         * Earth orbit, 12 km/s exceeds satellite plus observer ground speed; the line-of-sight
+         * range cannot shrink by more than that speed times half the interval. The resulting
+         * angular bound keeps deep-below-horizon intervals at the inexpensive coarse step.
+         */
+        fun mayHidePass(first: SatelliteLook, last: SatelliteLook, elapsedMillis: Long): Boolean {
+            if (elapsedMillis <= 10_000L || above(first) || above(last)) return false
+            val halfTravelKm = 12.0 * elapsedMillis / 2_000.0
+            val nearestRangeKm = minOf(first.slantRangeKm, last.slantRangeKm) - halfTravelKm
+            if (nearestRangeKm <= 0.0) return true
+            val angularBoundDegrees = Math.toDegrees(halfTravelKm / nearestRangeKm)
+            return maxOf(first.elevationDegrees, last.elevationDegrees) + angularBoundDegrees >=
+                minElevationDegrees
+        }
+
+        fun consumeInterval(fromTime: Instant, fromLook: SatelliteLook,
+                            toTime: Instant, toLook: SatelliteLook) {
+            val elapsedMillis = Duration.between(fromTime, toTime).toMillis()
+            if (mayHidePass(fromLook, toLook, elapsedMillis)) {
+                val midpoint = fromTime.plusMillis(elapsedMillis / 2)
+                val middleLook = look(midpoint)
+                consumeInterval(fromTime, fromLook, midpoint, middleLook)
+                consumeInterval(midpoint, middleLook, toTime, toLook)
+            } else {
+                consume(toTime, toLook)
+            }
+        }
+
+        while (previousTime.isBefore(end)) {
+            val candidate = previousTime.plusSeconds(stepSeconds.toLong())
+            val nextTime = if (candidate.isAfter(end)) end else candidate
+            val nextLook = look(nextTime)
+            consumeInterval(previousTime, previousLook, nextTime, nextLook)
+        }
+
+        aos?.let { activeAos ->
+            passes += makePass(activeAos, end, sampledPeak ?: previousLook,
                 beganBeforeWindow, true, stepSeconds, ::look)
         }
         return passes

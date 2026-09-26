@@ -10,3 +10,6 @@ catalog-service/node_modules/
 catalog-service/.wrangler/
 catalog-service/.dev.vars
 experimental/lrpt/build-*/
+
+# Operator-supplied catalog export used for local testing.
+/space-track-gp.json

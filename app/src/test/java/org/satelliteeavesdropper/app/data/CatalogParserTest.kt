@@ -32,6 +32,7 @@ class CatalogParserTest {
         assertTrue(packet.mayReceive)
         val voice = iss.transmitters.first { it.decoderId == "AUDIO_NFM" }
         assertEquals(145_800_000L, voice.frequencyHz)
+        assertEquals("amateur · VHF satellite antenna for 145.800 MHz", voice.policyAndAntennaLabel)
         assertTrue(voice.mayReceive)
 
         val meteor = catalog.satellites.first { it.noradId == "59051" }
@@ -76,9 +77,44 @@ class CatalogParserTest {
         assertNull(parsed.decoderId)
         assertNull(parsed.captureRateSps)
         assertEquals("external 2 m antenna", parsed.antenna)
+        assertEquals("restricted · external 2 m antenna", parsed.policyAndAntennaLabel)
         assertTrue(parsed.evidenceUrls.isEmpty())
         assertEquals("restricted", parsed.policy)
         assertFalse(parsed.mayReceive)
+    }
+
+    @Test
+    fun truncatesFractionalNumericBaudFromSatnogs() {
+        val root = JSONObject(sampleJson())
+        val tx = root.getJSONArray("satellites").getJSONObject(0)
+            .getJSONArray("transmitters").getJSONObject(0)
+        tx.put("baud", 977.52)
+
+        val parsed = CatalogParser.parse(root.toString()).satellites.first().transmitters.first()
+
+        assertEquals(977, parsed.baud)
+    }
+
+    @Test
+    fun omitsUnknownAntennaFromTransmitterLabel() {
+        val root = JSONObject(sampleJson())
+        val tx = root.getJSONArray("satellites").getJSONObject(0)
+            .getJSONArray("transmitters").getJSONObject(0)
+
+        tx.put("antenna", JSONObject.NULL)
+        val nullAntenna = CatalogParser.parse(root.toString()).satellites.first().transmitters.first()
+        assertNull(nullAntenna.antenna)
+        assertEquals("amateur", nullAntenna.policyAndAntennaLabel)
+
+        tx.remove("antenna")
+        val missingAntenna = CatalogParser.parse(root.toString()).satellites.first().transmitters.first()
+        assertNull(missingAntenna.antenna)
+        assertEquals("amateur", missingAntenna.policyAndAntennaLabel)
+
+        tx.put("antenna", JSONObject().put("band", "2m"))
+        val missingDescription = CatalogParser.parse(root.toString()).satellites.first().transmitters.first()
+        assertNull(missingDescription.antenna)
+        assertEquals("amateur", missingDescription.policyAndAntennaLabel)
     }
 
     @Test

@@ -1,6 +1,6 @@
 # Notices and data attribution
 
-The source written for Satellite Eavesdropper is offered under
+The source written for OrbitScope is offered under
 `GPL-3.0-only`; see [LICENSE](LICENSE). This does **not** relicense the
 third-party code or catalog data below. Their original copyright and license
 notices remain in their source files.
@@ -37,6 +37,8 @@ in [app/src/main/cpp/third_party/README.md](app/src/main/cpp/third_party/README.
 - **Bouncy Castle Java** (`bcprov-jdk18on`) — MIT-style license, with its
   copyright and permission notice required in copies or substantial portions.
   <https://www.bouncycastle.org/about/license/>.
+- **Gson** — Apache License 2.0. The app uses its streaming JSON reader for
+  signed catalogs. <https://github.com/google/gson>.
 - AndroidX, Kotlin, and other packaged dependencies retain their own licenses.
   Produce and inspect a complete dependency-license inventory, including
   transitive dependencies, and ship applicable texts/notices with any APK or
@@ -66,3 +68,12 @@ GPL-3.0-only.
 The bundled `sample_catalog.json` and `catalog-service/fixtures/demo-catalog.json`
 are historical, unsigned demonstrations of the combined catalog format, not
 current observing data. Fresh manifests carry their own attribution strings.
+
+## Bundled map outlines
+
+The offline world map includes `app/src/main/assets/maps/ne_110m_land.geojson`,
+the Natural Earth 1:110m land polygons (downloaded September 2026 from
+<https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_land.geojson>).
+Natural Earth [places its map data in the public domain](https://www.naturalearthdata.com/about/terms-of-use/).
+The 1:110m outlines are suitable for regional orientation, not street-level
+positioning; selected WGS84 coordinates come from the map projection itself.

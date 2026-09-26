@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep the mark inside the adaptive icon's safe area at every density. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="18.5%"
+    android:insetTop="18.5%"
+    android:insetRight="18.5%"
+    android:insetBottom="18.5%">
+    <bitmap
+        android:src="@drawable/orbitscope_logo"
+        android:gravity="fill"
+        android:filter="true" />
+</inset>

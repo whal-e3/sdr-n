@@ -3,11 +3,22 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace satellite_rx {
 
 constexpr std::uint32_t kAudioSampleRate = 48000;
+
+// Measurements of the filtered complex FM channel, before audio DC removal.
+// They can describe a carrier-like component, never its source or packet sync.
+struct FmCarrierMeasurement {
+    double residual_hz;
+    double phase_coherence;
+    double phase_stddev_hz;
+    double rms_amplitude;
+    double power_variation;
+};
 
 // Streaming narrow-FM discriminator. A windowed-sinc fractional resampler
 // first limits the complex channel to 12 kHz and converts it to 48 kS/s;
@@ -20,6 +31,7 @@ public:
     void configure(double deviation_hz, double deemphasis_microseconds);
     void reset();
     void push(float i, float q, std::vector<std::int16_t>& output);
+    std::optional<FmCarrierMeasurement> takeCarrierMeasurement();
 
 private:
     void demodulate(const std::complex<double>& sample,
@@ -47,6 +59,17 @@ private:
     float audio_taps_[kAudioTaps]{};
     float audio_history_[kAudioTaps]{};
     std::size_t audio_write_index_ = 0;
+
+    // One half-second window, accumulated only after channel filtering.
+    std::size_t carrier_count_ = 0;
+    double carrier_cross_real_ = 0.0;
+    double carrier_cross_imag_ = 0.0;
+    double carrier_cross_magnitude_ = 0.0;
+    double carrier_phase_weighted_ = 0.0;
+    double carrier_phase_squared_weighted_ = 0.0;
+    double carrier_power_ = 0.0;
+    double carrier_power_squared_ = 0.0;
+    std::optional<FmCarrierMeasurement> carrier_measurement_;
 };
 
 }  // namespace satellite_rx

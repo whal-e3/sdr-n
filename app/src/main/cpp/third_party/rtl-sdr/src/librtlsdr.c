@@ -1704,13 +1704,20 @@ found:
 		break;
 	}
 
-	/* Hack to force the Bias T to always be on if we set the IR-Endpoint
-	* bit in the EEPROM to 0. Default on EEPROM is 1.
-	*/
-	r = rtlsdr_read_eeprom(dev, buf, 0, EEPROM_SIZE);
-	dev->force_bt = (buf[7] & 0x02) ? 0 : 1;
-	if(dev->force_bt)
-		rtlsdr_set_bias_tee(dev, 1);
+	if (fd >= 0) {
+		/* Android owns this USB descriptor. Keep GPIO0 (the bias tee on
+		 * RTL-SDR Blog dongles) off for passive antennas, even if an
+		 * EEPROM flag or a previous session requested bias tee power. */
+		dev->force_bt = 0;
+		rtlsdr_set_bias_tee(dev, 0);
+	} else {
+		/* Hack to force the Bias T to always be on if we set the IR-Endpoint
+		 * bit in the EEPROM to 0. Default on EEPROM is 1. */
+		r = rtlsdr_read_eeprom(dev, buf, 0, EEPROM_SIZE);
+		dev->force_bt = (buf[7] & 0x02) ? 0 : 1;
+		if (dev->force_bt)
+			rtlsdr_set_bias_tee(dev, 1);
+	}
 
 	if (dev->tuner->init)
 		r = dev->tuner->init(dev);

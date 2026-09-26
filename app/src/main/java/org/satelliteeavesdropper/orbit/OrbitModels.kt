@@ -20,7 +20,7 @@ data class OmmElements(
     val objectId: String? = null,
 ) {
     init {
-        require(noradId.matches(Regex("[0-9]{1,9}")) && noradId.toInt() > 0) {
+        require(noradId.matches(NORAD_ID_PATTERN) && noradId.toInt() > 0) {
             "NORAD_CAT_ID must be a positive decimal ID of at most nine digits"
         }
         require(meanMotionRevolutionsPerDay.isFinite() && meanMotionRevolutionsPerDay > 0.0)
@@ -31,6 +31,9 @@ data class OmmElements(
     }
 
     companion object {
+        private val NORAD_ID_PATTERN = Regex("[0-9]{1,9}")
+        private val EPOCH_OFFSET_PATTERN = Regex("[+-]\\d\\d:\\d\\d$")
+
         /** Accepts numeric or string-valued CelesTrak OMM JSON fields. Missing optional drag fields are zero. */
         fun fromCelestrakFields(fields: Map<String, Any?>): OmmElements {
             fun required(name: String): String = fields[name]?.toString()?.takeIf(String::isNotBlank)
@@ -57,8 +60,10 @@ data class OmmElements(
             } else {
                 required("NORAD_CAT_ID")
             }
-            val epochText = required("EPOCH")
-            val epoch = if (epochText.endsWith("Z") || epochText.contains(Regex("[+-]\\d\\d:\\d\\d$"))) {
+            // Space-Track GP JSON uses a space between the UTC date and time;
+            // CelesTrak OMM JSON uses the ISO T separator. Both are UTC.
+            val epochText = required("EPOCH").trim().replaceFirst(' ', 'T')
+            val epoch = if (epochText.endsWith("Z") || epochText.contains(EPOCH_OFFSET_PATTERN)) {
                 Instant.parse(epochText)
             } else {
                 LocalDateTime.parse(epochText).toInstant(ZoneOffset.UTC)

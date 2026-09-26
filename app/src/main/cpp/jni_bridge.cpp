@@ -103,6 +103,19 @@ Java_org_satelliteeavesdropper_app_NativeReceiver_nativeSpectrum(
     return result;
 }
 
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_org_satelliteeavesdropper_app_NativeReceiver_nativeIqSnapshot(
+    JNIEnv* env, jobject, jlong handle) {
+    const auto session = findSession(handle);
+    if (!session) return env->NewFloatArray(0);
+    const auto samples = session->core->iqSnapshot();
+    jfloatArray result = env->NewFloatArray(static_cast<jsize>(samples.size()));
+    if (result) env->SetFloatArrayRegion(result, 0,
+                                         static_cast<jsize>(samples.size()),
+                                         samples.data());
+    return result;
+}
+
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_org_satelliteeavesdropper_app_NativeReceiver_nativeStats(
     JNIEnv* env, jobject, jlong handle) {
@@ -116,6 +129,38 @@ Java_org_satelliteeavesdropper_app_NativeReceiver_nativeStats(
     };
     jlongArray result = env->NewLongArray(3);
     if (result) env->SetLongArrayRegion(result, 0, 3, values);
+    return result;
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_org_satelliteeavesdropper_app_NativeReceiver_nativeDecoderStats(
+    JNIEnv* env, jobject, jlong handle) {
+    const auto session = findSession(handle);
+    if (!session) return env->NewLongArray(0);
+    const auto stats = session->core->decoderStats();
+    const jlong values[] = {
+        static_cast<jlong>(stats.hdlc_flag_candidates),
+        static_cast<jlong>(stats.failed_frame_crc),
+        static_cast<jlong>(stats.verified_frames),
+    };
+    jlongArray result = env->NewLongArray(3);
+    if (result) env->SetLongArrayRegion(result, 0, 3, values);
+    return result;
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_org_satelliteeavesdropper_app_NativeReceiver_nativeAfcStats(
+    JNIEnv* env, jobject, jlong handle) {
+    const auto session = findSession(handle);
+    if (!session) return env->NewDoubleArray(0);
+    const auto stats = session->core->afcStats();
+    const jdouble values[] = {
+        stats.tracking ? 1.0 : 0.0,
+        stats.applied_hz,
+        stats.residual_hz,
+    };
+    jdoubleArray result = env->NewDoubleArray(3);
+    if (result) env->SetDoubleArrayRegion(result, 0, 3, values);
     return result;
 }
 

@@ -18,6 +18,8 @@ internal fun interface TemeStateProvider {
     fun at(time: Instant): TemeState
 }
 
+private val LAUNCH_ID_PATTERN = Regex("^(\\d{4})-(\\d{3})([A-Z]{1,3})$")
+
 /** SGP4/SDP4 propagation without an Orekit data archive or a TLE text conversion. */
 internal class OrekitSgp4(omm: OmmElements) : TemeStateProvider {
     private val epoch = omm.epoch
@@ -33,7 +35,7 @@ internal class OrekitSgp4(omm: OmmElements) : TemeStateProvider {
     private val propagator: TLEPropagator
 
     init {
-        val launch = Regex("^(\\d{4})-(\\d{3})([A-Z]{1,3})$").matchEntire(omm.objectId.orEmpty())
+        val launch = LAUNCH_ID_PATTERN.matchEntire(omm.objectId.orEmpty())
         val revolutionsToRadians = 2.0 * PI
         val secondsPerDay = 86_400.0
         val tle = TLE(

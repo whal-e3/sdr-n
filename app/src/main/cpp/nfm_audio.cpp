@@ -86,6 +86,18 @@ void NfmAudioDemodulator::reset() {
     audio_dc_state_ = 0.0;
     std::fill(std::begin(audio_history_), std::end(audio_history_), 0.0f);
     audio_write_index_ = 0;
+    carrier_count_ = 0;
+    carrier_cross_real_ = carrier_cross_imag_ = carrier_cross_magnitude_ = 0.0;
+    carrier_phase_weighted_ = carrier_phase_squared_weighted_ = 0.0;
+    carrier_power_ = carrier_power_squared_ = 0.0;
+    carrier_measurement_.reset();
+}
+
+std::optional<FmCarrierMeasurement>
+NfmAudioDemodulator::takeCarrierMeasurement() {
+    auto measurement = carrier_measurement_;
+    carrier_measurement_.reset();
+    return measurement;
 }
 
 void NfmAudioDemodulator::push(float i, float q,
@@ -130,6 +142,42 @@ void NfmAudioDemodulator::demodulate(
     previous_sample_ = sample;
     const double phase_step = std::atan2(phase_product.imag(),
                                          phase_product.real());
+    const double cross_magnitude = std::abs(phase_product);
+    const double power = std::norm(sample);
+    carrier_cross_real_ += phase_product.real();
+    carrier_cross_imag_ += phase_product.imag();
+    carrier_cross_magnitude_ += cross_magnitude;
+    carrier_phase_weighted_ += phase_step * cross_magnitude;
+    carrier_phase_squared_weighted_ += phase_step * phase_step *
+                                       cross_magnitude;
+    carrier_power_ += power;
+    carrier_power_squared_ += power * power;
+    if (++carrier_count_ == kAudioSampleRate / 2) {
+        const double mean_power = carrier_power_ / carrier_count_;
+        const double mean_phase = carrier_cross_magnitude_ > 0.0
+            ? carrier_phase_weighted_ / carrier_cross_magnitude_ : 0.0;
+        const double phase_variance = carrier_cross_magnitude_ > 0.0
+            ? std::max(0.0, carrier_phase_squared_weighted_ /
+                       carrier_cross_magnitude_ - mean_phase * mean_phase)
+            : 0.0;
+        const double hz_per_radian = kAudioSampleRate / (2.0 * kPi);
+        carrier_measurement_ = FmCarrierMeasurement{
+            mean_phase * hz_per_radian,
+            carrier_cross_magnitude_ > 0.0
+                ? std::hypot(carrier_cross_real_, carrier_cross_imag_) /
+                  carrier_cross_magnitude_ : 0.0,
+            std::sqrt(phase_variance) * hz_per_radian,
+            std::sqrt(mean_power),
+            mean_power > 0.0
+                ? std::max(0.0, carrier_power_squared_ / carrier_count_ -
+                                 mean_power * mean_power) /
+                  (mean_power * mean_power) : 0.0,
+        };
+        carrier_count_ = 0;
+        carrier_cross_real_ = carrier_cross_imag_ = carrier_cross_magnitude_ = 0.0;
+        carrier_phase_weighted_ = carrier_phase_squared_weighted_ = 0.0;
+        carrier_power_ = carrier_power_squared_ = 0.0;
+    }
     const double frequency_hz = phase_step * kAudioSampleRate / (2.0 * kPi);
     const double normalized = std::clamp(frequency_hz / deviation_hz_, -2.0, 2.0);
 

@@ -1,56 +1,24 @@
 package org.satelliteeavesdropper.app
 
-import android.Manifest
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.graphics.Color
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.satelliteeavesdropper.app.data.CatalogLoadResult
@@ -58,25 +26,25 @@ import org.satelliteeavesdropper.app.data.CatalogRepository
 import org.satelliteeavesdropper.app.data.CatalogSource
 import org.satelliteeavesdropper.app.data.SatelliteRecord
 import org.satelliteeavesdropper.app.data.TransmitterRecord
+import org.satelliteeavesdropper.app.data.isFreshWithin72Hours
+import org.satelliteeavesdropper.app.data.verifyReceptionSelection
 import org.satelliteeavesdropper.app.receiver.ReceptionService
 import org.satelliteeavesdropper.app.receiver.ReceptionState
+import org.satelliteeavesdropper.app.receiver.isUsableReceiveFix
 import org.satelliteeavesdropper.orbit.ObserverLocation
-import org.satelliteeavesdropper.orbit.SatelliteLook
-import org.satelliteeavesdropper.orbit.SatelliteOrbit
-import org.satelliteeavesdropper.orbit.SatellitePass
-import java.time.Duration
 import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 
-private data class VisibleSatellite(val record: SatelliteRecord, val look: SatelliteLook)
-private data class UsbChoice(val device: UsbDevice, val type: Int, val label: String)
+internal data class UsbChoice(val device: UsbDevice, val type: Int, val label: String)
+private data class DiagnosticTuning(val satellite: SatelliteRecord, val transmitter: TransmitterRecord)
 private data class PendingReception(
     val choice: UsbChoice,
     val satellite: SatelliteRecord,
     val transmitter: TransmitterRecord,
     val observer: ObserverLocation,
+    val automaticObserver: Boolean,
+    val initialFixElapsedMs: Long?,
 )
 
 /** Explicit receiver keeps the USB grant PendingIntent valid on Android 14+. */
@@ -93,9 +61,28 @@ class UsbPermissionReceiver : BroadcastReceiver() {
 class MainActivity : ComponentActivity() {
     private var pendingReception: PendingReception? = null
     private var usbMessage by mutableStateOf<String?>(null)
+    private var diagnosticDevices by mutableStateOf<List<UsbChoice>?>(null)
+    private var diagnosticMessage by mutableStateOf<String?>(null)
+    private var diagnosticCaptureRunning by mutableStateOf(false)
+    private var pendingDiagnosticDevice: UsbChoice? = null
     private val usbManager by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
 
     private val usbPermissionCallback: (Context, Intent) -> Unit = usbPermissionCallback@{ _, intent ->
+            if (intent.action == ACTION_USB_DIAGNOSTIC_PERMISSION) {
+                val pending = pendingDiagnosticDevice ?: return@usbPermissionCallback
+                pendingDiagnosticDevice = null
+                val returnedDevice = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                if (returnedDevice?.deviceName != pending.device.deviceName) {
+                    diagnosticMessage = "USB access result did not match the requested SDR. Scan again."
+                    Log.w(TAG, "USB diagnostic permission result did not match ${pending.device.deviceName}")
+                    return@usbPermissionCallback
+                }
+                val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) &&
+                    usbManager.hasPermission(pending.device)
+                diagnosticMessage = "USB access ${if (granted) "granted" else "denied"} for ${pending.label}. Receiver not started."
+                Log.i(TAG, "USB diagnostic permission ${if (granted) "granted" else "denied"} for ${pending.device.deviceName}")
+                return@usbPermissionCallback
+            }
             if (intent.action != ACTION_USB_PERMISSION) return@usbPermissionCallback
             val pending = pendingReception ?: return@usbPermissionCallback
             pendingReception = null
@@ -108,12 +95,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = Color.rgb(7, 19, 31)
+        window.navigationBarColor = Color.rgb(16, 36, 52)
+        window.decorView.systemUiVisibility = 0
         UsbPermissionReceiver.onResult = usbPermissionCallback
         setContent {
-            MaterialTheme {
+            OrbitTheme {
                 SatelliteScreen(
                     usbDevices = ::supportedUsbDevices,
                     usbMessage = usbMessage,
+                    diagnosticDevices = diagnosticDevices,
+                    diagnosticMessage = diagnosticMessage,
+                    diagnosticCaptureRunning = diagnosticCaptureRunning,
+                    scanUsbSdr = ::scanUsbSdr,
+                    requestUsbAccess = ::requestDiagnosticUsbAccess,
+                    captureUsbIq = ::captureDiagnosticUsbIq,
                     startReception = ::requestReception,
                     stopReception = {
                         startService(Intent(this, ReceptionService::class.java).setAction(ReceptionService.ACTION_STOP))
@@ -128,6 +124,17 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    override fun onStart() {
+        super.onStart()
+        ReceptionState.setActivityVisible(true)
+    }
+
+    override fun onStop() {
+        // The receiver may keep running in the foreground, but this activity no longer supplies GPS fixes.
+        ReceptionState.setActivityVisible(false)
+        super.onStop()
+    }
+
     private fun supportedUsbDevices(): List<UsbChoice> = usbManager.deviceList.values.mapNotNull { device ->
         val type = when {
             device.vendorId == 0x1d50 && device.productId == 0x6089 -> 2
@@ -138,17 +145,179 @@ class MainActivity : ComponentActivity() {
         UsbChoice(device, type, "${if (type == 1) "RTL-SDR" else "HackRF One"} · ${device.productName ?: device.deviceName}")
     }
 
+    private fun scanUsbSdr() {
+        val attached = usbManager.deviceList.values
+        val supported = supportedUsbDevices()
+        diagnosticDevices = supported
+        diagnosticMessage = "Found ${supported.size} supported SDR(s) among ${attached.size} USB device(s)."
+        Log.i(TAG, "USB scan: ${attached.joinToString { device ->
+            "%04x:%04x (%s)".format(Locale.US, device.vendorId, device.productId, device.deviceName)
+        }}; supported=${supported.size}")
+    }
+
+    private fun requestDiagnosticUsbAccess(choice: UsbChoice) {
+        if (pendingDiagnosticDevice != null) {
+            diagnosticMessage = "Wait for the current USB access decision before requesting another."
+            return
+        }
+        val attached = usbManager.deviceList[choice.device.deviceName]
+        if (attached == null) {
+            diagnosticMessage = "SDR disconnected. Scan USB SDR again."
+            Log.i(TAG, "USB diagnostic device disconnected: ${choice.device.deviceName}")
+            return
+        }
+        if (usbManager.hasPermission(attached)) {
+            diagnosticMessage = "USB access already granted for ${choice.label}. Receiver not started."
+            Log.i(TAG, "USB diagnostic permission already granted for ${choice.device.deviceName}")
+            return
+        }
+        pendingDiagnosticDevice = choice
+        val intent = Intent(this, UsbPermissionReceiver::class.java).setAction(ACTION_USB_DIAGNOSTIC_PERMISSION)
+        val grant = PendingIntent.getBroadcast(
+            this, 1, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        try {
+            diagnosticMessage = "Waiting for Android USB access decision for ${choice.label}."
+            Log.i(TAG, "USB diagnostic permission requested for ${choice.device.deviceName}")
+            usbManager.requestPermission(attached, grant)
+        } catch (error: Exception) {
+            pendingDiagnosticDevice = null
+            diagnosticMessage = "Could not request USB access: ${error.message ?: error.javaClass.simpleName}"
+            Log.e(TAG, "USB diagnostic permission request failed for ${choice.device.deviceName}", error)
+        }
+    }
+
+    private fun captureDiagnosticUsbIq(choice: UsbChoice, catalog: CatalogLoadResult?) {
+        if (diagnosticCaptureRunning) return
+        if (ReceptionState.snapshots.value.state in setOf("Starting", "Receiving")) {
+            diagnosticMessage = "Stop the current receiver before checking USB IQ."
+            return
+        }
+        val now = Instant.now()
+        if (catalog == null || catalog.source == CatalogSource.DEMO ||
+            !isFreshWithin72Hours(catalog.manifest.sourceUpdatedAt, now)) {
+            diagnosticMessage = "A current signed catalog is required for the USB IQ check."
+            return
+        }
+        val eligible = catalog.manifest.satellites.asSequence()
+            .filter { satellite ->
+                satellite.orbitElements()?.epoch?.let { isFreshWithin72Hours(it, now) } == true
+            }
+            .flatMap { satellite ->
+                satellite.transmitters.asSequence().map { DiagnosticTuning(satellite, it) }
+            }
+            .filter { tuning ->
+                val tx = tuning.transmitter
+                tx.mayReceive && tx.status == "active" && tx.decoderId != null &&
+                    tx.frequencyHz > 0 &&
+                    (tx.captureRateSps == 1_024_000 || tx.captureRateSps == 2_400_000)
+            }
+            .toList()
+        val tuning = eligible.firstOrNull {
+            it.satellite.noradId == "25544" &&
+                it.transmitter.frequencyHz == 145_825_000L &&
+                it.transmitter.decoderId == "AX25_AFSK1200"
+        } ?: eligible.firstOrNull()
+        if (tuning == null) {
+            diagnosticMessage = "No current curated public/amateur downlink is available for the USB IQ check."
+            return
+        }
+        val attached = supportedUsbDevices().firstOrNull {
+            it.device.deviceName == choice.device.deviceName &&
+                it.device.vendorId == choice.device.vendorId &&
+                it.device.productId == choice.device.productId && it.type == choice.type
+        }
+        if (attached == null) {
+            diagnosticMessage = "SDR disconnected. Scan USB SDR again."
+            return
+        }
+        if (!usbManager.hasPermission(attached.device)) {
+            diagnosticMessage = "Request Android USB access before checking IQ samples."
+            return
+        }
+
+        val tx = tuning.transmitter
+        val sampleRate = tx.captureRateSps!!
+        diagnosticCaptureRunning = true
+        diagnosticMessage = "Checking USB IQ for 3 seconds at ${"%.6f".format(Locale.US, tx.frequencyHz / 1_000_000.0)} MHz…"
+        Log.i(TAG, "USB IQ check: device=${attached.device.deviceName}, satellite=${tuning.satellite.noradId}, " +
+            "frequencyHz=${tx.frequencyHz}, sampleRateSps=$sampleRate, decoder=off")
+        lifecycleScope.launch {
+            try {
+                val stats = withContext(Dispatchers.IO) {
+                    val connection = usbManager.openDevice(attached.device)
+                        ?: error("Could not open the granted USB device")
+                    var handle = 0L
+                    var finalStats = longArrayOf()
+                    try {
+                        handle = NativeReceiver.nativeCreate(sampleRate)
+                        check(handle != 0L) { "Could not create native receiver" }
+                        check(NativeReceiver.nativeSetMode(handle, 0) == 0) { "Could not select spectrum-only mode" }
+                        val openCode = NativeReceiver.nativeOpenUsb(handle, connection.fileDescriptor, attached.type)
+                        Log.i(TAG, "USB IQ check nativeOpenUsb=$openCode")
+                        check(openCode == 0) { "Could not open SDR receiver (code $openCode)" }
+                        val startCode = NativeReceiver.nativeStartRx(handle, tx.frequencyHz)
+                        Log.i(TAG, "USB IQ check nativeStartRx=$startCode")
+                        check(startCode == 0) { "Could not start SDR stream (code $startCode)" }
+                        delay(3_000)
+                    } finally {
+                        if (handle != 0L) {
+                            finalStats = runCatching { NativeReceiver.nativeStats(handle) }
+                                .getOrElse { error ->
+                                    Log.e(TAG, "USB IQ check stats failed", error)
+                                    longArrayOf()
+                                }
+                            Log.i(TAG, "USB IQ check final complex samples: accepted=${finalStats.getOrElse(0) { 0 }}, " +
+                                "dropped=${finalStats.getOrElse(1) { 0 }}, processed=${finalStats.getOrElse(2) { 0 }}")
+                            runCatching { NativeReceiver.nativeStopRx(handle) }
+                                .onFailure { Log.e(TAG, "USB IQ check stop failed", it) }
+                            runCatching { NativeReceiver.nativeDestroy(handle) }
+                                .onFailure { Log.e(TAG, "USB IQ check destroy failed", it) }
+                        }
+                        connection.close()
+                    }
+                    finalStats
+                }
+                val accepted = stats.getOrElse(0) { 0 }
+                val dropped = stats.getOrElse(1) { 0 }
+                val processed = stats.getOrElse(2) { 0 }
+                diagnosticMessage = "USB IQ check: $accepted accepted, $dropped dropped, $processed processed complex samples. " +
+                    if (accepted > 0) "USB samples arrived; decoding was not tested." else "Failed: no USB samples arrived."
+            } catch (error: CancellationException) {
+                Log.i(TAG, "USB IQ check cancelled")
+                throw error
+            } catch (error: Throwable) {
+                diagnosticMessage = "USB IQ check failed: ${error.message ?: error.javaClass.simpleName}"
+                Log.e(TAG, "USB IQ check failed", error)
+            } finally {
+                diagnosticCaptureRunning = false
+            }
+        }
+    }
+
     private fun requestReception(
         choice: UsbChoice,
         satellite: SatelliteRecord,
         transmitter: TransmitterRecord,
         observer: ObserverLocation,
+        automaticObserver: Boolean,
+        initialFixElapsedMs: Long?,
     ) {
-        if (!transmitter.mayReceive || transmitter.frequencyHz <= 0 || transmitter.captureRateSps == null) {
+        if (diagnosticCaptureRunning) {
+            usbMessage = "Wait for the USB IQ check to finish before receiving."
+            return
+        }
+        if (!transmitter.mayReceive || transmitter.frequencyHz <= 0 || transmitter.captureRateSps == null ||
+            transmitter.decoderId !in setOf("AUDIO_NFM", "AX25_AFSK1200")) {
             usbMessage = "This transmitter is not enabled for reception"
             return
         }
-        val pending = PendingReception(choice, satellite, transmitter, observer)
+        if (automaticObserver && !isUsableReceiveFix(initialFixElapsedMs, SystemClock.elapsedRealtime())) {
+            usbMessage = "Automatic GPS fix expired. Wait for a fresh fix before receiving."
+            return
+        }
+        val pending = PendingReception(choice, satellite, transmitter, observer,
+            automaticObserver, initialFixElapsedMs)
         if (usbManager.hasPermission(choice.device)) {
             launchReception(pending)
         } else {
@@ -163,310 +332,55 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchReception(pending: PendingReception) {
-        val request = Intent(this, ReceptionService::class.java).apply {
-            action = ReceptionService.ACTION_START
-            putExtra(ReceptionService.EXTRA_DEVICE_NAME, pending.choice.device.deviceName)
-            putExtra(ReceptionService.EXTRA_DEVICE_TYPE, pending.choice.type)
-            putExtra(ReceptionService.EXTRA_FREQUENCY_HZ, pending.transmitter.frequencyHz)
-            putExtra(ReceptionService.EXTRA_SAMPLE_RATE, pending.transmitter.captureRateSps!!)
-            putExtra(ReceptionService.EXTRA_OMM_JSON, pending.satellite.omm.toString())
-            putExtra(ReceptionService.EXTRA_LATITUDE, pending.observer.latitudeDegrees)
-            putExtra(ReceptionService.EXTRA_LONGITUDE, pending.observer.longitudeDegrees)
-            putExtra(ReceptionService.EXTRA_ALTITUDE, pending.observer.altitudeMeters)
-            putExtra(ReceptionService.EXTRA_DECODER_ID, pending.transmitter.decoderId)
-        }
-        try {
-            startForegroundService(request)
-            usbMessage = "Starting ${pending.choice.label}"
-        } catch (error: Exception) {
-            usbMessage = error.message ?: "Could not start USB receiver"
+        lifecycleScope.launch {
+            try {
+                require(!pending.automaticObserver ||
+                    isUsableReceiveFix(pending.initialFixElapsedMs, SystemClock.elapsedRealtime())) {
+                    "Automatic GPS fix expired while waiting for USB access. Wait for a new fix."
+                }
+                // A target or catalog may have aged out while the Android USB grant was open.
+                val verified = withContext(Dispatchers.IO) {
+                    val catalog = CatalogRepository(this@MainActivity).load(refresh = false)
+                    verifyReceptionSelection(
+                        catalog, pending.satellite, pending.transmitter, pending.observer, Instant.now(),
+                    )
+                }
+                require(!pending.automaticObserver ||
+                    isUsableReceiveFix(pending.initialFixElapsedMs, SystemClock.elapsedRealtime())) {
+                    "Automatic GPS fix expired before reception could start. Wait for a new fix."
+                }
+                val request = Intent(this@MainActivity, ReceptionService::class.java).apply {
+                    action = ReceptionService.ACTION_START
+                    putExtra(ReceptionService.EXTRA_DEVICE_NAME, pending.choice.device.deviceName)
+                    putExtra(ReceptionService.EXTRA_DEVICE_TYPE, pending.choice.type)
+                    putExtra(ReceptionService.EXTRA_FREQUENCY_HZ, verified.transmitter.frequencyHz)
+                    putExtra(ReceptionService.EXTRA_SAMPLE_RATE, verified.transmitter.captureRateSps!!)
+                    putExtra(ReceptionService.EXTRA_OMM_JSON, verified.satellite.omm.toString())
+                    putExtra(ReceptionService.EXTRA_LATITUDE, pending.observer.latitudeDegrees)
+                    putExtra(ReceptionService.EXTRA_LONGITUDE, pending.observer.longitudeDegrees)
+                    putExtra(ReceptionService.EXTRA_ALTITUDE, pending.observer.altitudeMeters)
+                    putExtra(ReceptionService.EXTRA_DECODER_ID, verified.transmitter.decoderId)
+                    putExtra(ReceptionService.EXTRA_TARGET_NORAD, verified.satellite.noradId)
+                    putExtra(ReceptionService.EXTRA_TARGET_NAME, verified.satellite.name)
+                    putExtra(ReceptionService.EXTRA_SESSION_ID, UUID.randomUUID().toString())
+                    putExtra(ReceptionService.EXTRA_AUTOMATIC_OBSERVER, pending.automaticObserver)
+                    pending.initialFixElapsedMs?.let {
+                        putExtra(ReceptionService.EXTRA_INITIAL_FIX_ELAPSED_MS, it)
+                    }
+                }
+                startForegroundService(request)
+                usbMessage = "Starting ${pending.choice.label}"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                usbMessage = error.message ?: "Could not start USB receiver"
+            }
         }
     }
 
     companion object {
+        private const val TAG = "SatelliteUsbDiagnostic"
         private const val ACTION_USB_PERMISSION = "org.satelliteeavesdropper.app.USB_PERMISSION"
+        private const val ACTION_USB_DIAGNOSTIC_PERMISSION = "org.satelliteeavesdropper.app.USB_DIAGNOSTIC_PERMISSION"
     }
 }
-
-@Composable
-private fun SatelliteScreen(
-    usbDevices: () -> List<UsbChoice>,
-    usbMessage: String?,
-    startReception: (UsbChoice, SatelliteRecord, TransmitterRecord, ObserverLocation) -> Unit,
-    stopReception: () -> Unit,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val repository = remember { CatalogRepository(context) }
-    var catalog by remember { mutableStateOf<CatalogLoadResult?>(null) }
-    var catalogError by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(false) }
-    var latitude by rememberSaveable { mutableStateOf("") }
-    var longitude by rememberSaveable { mutableStateOf("") }
-    var observer by remember { mutableStateOf<ObserverLocation?>(null) }
-    var locationMessage by remember { mutableStateOf<String?>(null) }
-    var visible by remember { mutableStateOf<List<VisibleSatellite>>(emptyList()) }
-    var selected by remember { mutableStateOf<SatelliteRecord?>(null) }
-    var nextPass by remember { mutableStateOf<SatellitePass?>(null) }
-    var demoRunning by remember { mutableStateOf(false) }
-    var demoSpectrum by remember { mutableStateOf<List<Float>>(emptyList()) }
-    var demoError by remember { mutableStateOf<String?>(null) }
-    val reception by ReceptionState.snapshots.collectAsState()
-
-    suspend fun updateVisibility(load: CatalogLoadResult?, location: ObserverLocation?) {
-        if (load == null || location == null) return
-        val now = Instant.now()
-        visible = withContext(Dispatchers.Default) {
-            load.manifest.satellites.mapNotNull { record ->
-                if (record.transmitters.none { it.mayReceive }) return@mapNotNull null
-                val elements = record.orbitElements() ?: return@mapNotNull null
-                runCatching { VisibleSatellite(record, SatelliteOrbit(elements).lookFrom(location, now)) }.getOrNull()
-            }.filter { it.look.elevationDegrees >= 0.0 }
-                .sortedByDescending { it.look.elevationDegrees }
-        }
-    }
-
-    suspend fun loadCatalog() {
-        loading = true
-        try {
-            catalog = repository.load()
-            catalogError = null
-            selected = null
-            updateVisibility(catalog, observer)
-        } catch (error: Exception) {
-            catalogError = error.message ?: "Catalog could not be loaded"
-        } finally {
-            loading = false
-        }
-    }
-
-    val locationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { granted ->
-        if (granted.values.any { it }) {
-            scope.launch {
-                val fix = locateObserver(context)
-                if (fix == null) locationMessage = "No location fix; enter coordinates manually"
-                else {
-                    latitude = "%.5f".format(Locale.US, fix.latitudeDegrees)
-                    longitude = "%.5f".format(Locale.US, fix.longitudeDegrees)
-                    observer = fix
-                    locationMessage = "Using device location"
-                    updateVisibility(catalog, fix)
-                }
-            }
-        } else locationMessage = "Location permission denied; enter coordinates manually"
-    }
-
-    LaunchedEffect(Unit) { loadCatalog() }
-    LaunchedEffect(catalog, observer) {
-        while (isActive) {
-            updateVisibility(catalog, observer)
-            delay(30_000)
-        }
-    }
-    LaunchedEffect(selected, observer) {
-        val record = selected
-        val site = observer
-        while (isActive) {
-            nextPass = if (record != null && site != null) withContext(Dispatchers.Default) {
-                runCatching {
-                    val orbit = SatelliteOrbit(record.orbitElements() ?: return@runCatching null)
-                    orbit.predictPasses(site, Instant.now(), Instant.now().plus(Duration.ofHours(24))).firstOrNull()
-                }.getOrNull()
-            } else null
-            delay(60_000)
-        }
-    }
-    LaunchedEffect(demoRunning) {
-        if (!demoRunning) return@LaunchedEffect
-        var handle = 0L
-        try {
-            handle = NativeReceiver.nativeCreate(1_024_000)
-            check(handle != 0L) { "Native test receiver could not start" }
-            while (isActive) {
-                NativeReceiver.nativeGenerateTestTone(handle, 32_000.0, 16_384)
-                demoSpectrum = NativeReceiver.nativeSpectrum(handle).toList()
-                delay(400)
-            }
-        } catch (error: Throwable) {
-            demoError = error.message ?: "Native receiver unavailable"
-            demoRunning = false
-        } finally {
-            if (handle != 0L) NativeReceiver.nativeDestroy(handle)
-        }
-    }
-
-    Scaffold { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Satellite Eavesdropper", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text("Find public satellite downlinks above your location, then receive with a USB SDR.")
-                }
-            }
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Catalog", style = MaterialTheme.typography.titleMedium)
-                        Text(when (catalog?.source) {
-                            CatalogSource.LIVE -> "Signed live catalog · ${catalog?.manifest?.satellites?.size} satellites"
-                            CatalogSource.CACHED -> "Verified cached catalog · ${catalog?.manifest?.satellites?.size} satellites"
-                            CatalogSource.DEMO -> "Unsigned demo data · illustrative positions only"
-                            null -> "Loading catalog…"
-                        })
-                        catalog?.warning?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        catalogError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        OutlinedButton(onClick = { scope.launch { loadCatalog() } }, enabled = !loading) { Text("Refresh catalog") }
-                    }
-                }
-            }
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Observer location", style = MaterialTheme.typography.titleMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(latitude, { latitude = it }, label = { Text("Latitude") }, modifier = Modifier.weight(1f), singleLine = true)
-                            OutlinedTextField(longitude, { longitude = it }, label = { Text("Longitude") }, modifier = Modifier.weight(1f), singleLine = true)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                val lat = latitude.toDoubleOrNull()
-                                val lon = longitude.toDoubleOrNull()
-                                val location = runCatching { ObserverLocation(lat ?: Double.NaN, lon ?: Double.NaN) }.getOrNull()
-                                if (location == null) locationMessage = "Enter valid latitude and longitude"
-                                else {
-                                    observer = location
-                                    locationMessage = "Using manual location"
-                                    scope.launch { updateVisibility(catalog, location) }
-                                }
-                            }) { Text("Use coordinates") }
-                            OutlinedButton(onClick = {
-                                val granted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                                    context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                                if (granted) scope.launch {
-                                    val fix = locateObserver(context)
-                                    if (fix == null) locationMessage = "No location fix; enter coordinates manually"
-                                    else {
-                                        latitude = "%.5f".format(Locale.US, fix.latitudeDegrees)
-                                        longitude = "%.5f".format(Locale.US, fix.longitudeDegrees)
-                                        observer = fix
-                                        locationMessage = "Using device location"
-                                        updateVisibility(catalog, fix)
-                                    }
-                                } else locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                            }) { Text("Locate") }
-                        }
-                        locationMessage?.let { Text(it) }
-                    }
-                }
-            }
-            item {
-                Text("In sight now (${visible.size})", style = MaterialTheme.typography.titleLarge)
-                if (observer == null) Text("Set a location to calculate visibility.")
-                else if (visible.isEmpty()) Text("No cataloged public downlinks are above the horizon right now.")
-            }
-            items(visible, key = { it.record.noradId }) { item ->
-                Card(onClick = { selected = item.record }, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text(item.record.name, fontWeight = FontWeight.Bold)
-                        Text("${"%.1f".format(Locale.US, item.look.elevationDegrees)}° elevation · ${"%.0f".format(Locale.US, item.look.azimuthDegrees)}° azimuth")
-                        Text("${item.record.transmitters.count { it.mayReceive }} public/amateur downlinks")
-                    }
-                }
-            }
-            if (catalog?.source == CatalogSource.DEMO) {
-                item {
-                    Text("Browse demo catalog", style = MaterialTheme.typography.titleMedium)
-                    Text("These entries are for testing the interface, not current reception guidance.")
-                }
-                items(catalog!!.manifest.satellites, key = { "demo-${it.noradId}" }) { record ->
-                    Card(onClick = { selected = record }, modifier = Modifier.fillMaxWidth()) {
-                        Text(record.name, modifier = Modifier.padding(14.dp))
-                    }
-                }
-            }
-            selected?.let { record ->
-                item {
-                    HorizontalDivider()
-                    Text(record.name, style = MaterialTheme.typography.titleLarge)
-                    Text("NORAD ${record.noradId} · next pass ${nextPass?.let { formatTime(it.aos) } ?: "calculating / none in 24 h"}")
-                    Text("NFM voice plays audio; AX.25 packets appear below. Meteor imagery is not implemented yet.")
-                }
-                items(record.transmitters, key = { it.id }) { tx ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text("${"%.6f".format(Locale.US, tx.frequencyHz / 1_000_000.0)} MHz · ${tx.mode}", fontWeight = FontWeight.Bold)
-                            Text("Policy: ${tx.policy} · decoder: ${tx.decoderId ?: "not published"}")
-                            if (!tx.mayReceive) Text("Reception disabled: not a curated public/amateur downlink.")
-                            else if (tx.captureRateSps == null) Text("No supported capture configuration in catalog.")
-                            else if (observer == null) Text("Set your location before starting reception and Doppler tracking.")
-                            else if (catalog?.source == CatalogSource.DEMO) {
-                                Text("Hardware reception is disabled for unsigned demo data. Configure a signed catalog first.")
-                            } else if (catalog != null && (
-                                    Duration.between(catalog!!.manifest.sourceUpdatedAt, Instant.now()).toHours() !in 0L..72L ||
-                                    record.orbitElements()?.let { Duration.between(it.epoch, Instant.now()).toHours() !in 0L..72L } != false
-                                )) {
-                                Text("Catalog or orbital elements are stale. Refresh before receiving.")
-                            } else {
-                                val devices = usbDevices()
-                                if (devices.isEmpty()) Text("Connect an RTL-SDR or HackRF One with USB OTG.")
-                                devices.forEach { choice ->
-                                    Button(onClick = { startReception(choice, record, tx, observer!!) }) { Text("Receive with ${choice.label}") }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                HorizontalDivider()
-                Text("Receiver status", style = MaterialTheme.typography.titleLarge)
-                Text(reception.error ?: "${reception.state}${if (reception.device.isNotEmpty()) " · ${reception.device}" else ""}")
-                if (reception.state == "Receiving") {
-                    Text("${reception.acceptedSamples} samples · ${reception.droppedSamples} dropped")
-                    SpectrumPlot(reception.spectrum)
-                    if (reception.packets.isNotEmpty()) {
-                        Text("CRC-checked AX.25 packets", style = MaterialTheme.typography.titleMedium)
-                        reception.packets.takeLast(10).forEach { packet -> Text(packet) }
-                    }
-                    OutlinedButton(onClick = stopReception) { Text("Stop receiver") }
-                }
-                usbMessage?.let { Text(it) }
-            }
-            item {
-                HorizontalDivider()
-                Text("Test without hardware", style = MaterialTheme.typography.titleMedium)
-                Text("Synthetic IQ verifies the native spectrum pipeline. It is not a satellite signal.")
-                Button(onClick = { demoRunning = !demoRunning; demoError = null }) { Text(if (demoRunning) "Stop test tone" else "Start test tone") }
-                demoError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (demoRunning) SpectrumPlot(demoSpectrum)
-            }
-            item { Text("Only receive transmissions you are authorized to monitor. A phone antenna cannot be used as a general SDR antenna.", modifier = Modifier.padding(bottom = 24.dp)) }
-        }
-    }
-}
-
-@Composable
-private fun SpectrumPlot(bins: List<Float>) {
-    if (bins.size < 2) return
-    Canvas(Modifier.fillMaxWidth().height(100.dp)) {
-        val min = bins.minOrNull() ?: 0f
-        val max = bins.maxOrNull() ?: 1f
-        val span = (max - min).coerceAtLeast(0.001f)
-        val path = Path()
-        bins.forEachIndexed { index, value ->
-            val x = index.toFloat() / (bins.size - 1) * size.width
-            val y = size.height - ((value - min) / span) * size.height
-            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        drawPath(path, Color(0xFF009688), style = Stroke(width = 2.dp.toPx()))
-        drawLine(Color.LightGray, Offset(0f, size.height), Offset(size.width, size.height))
-    }
-}
-
-private fun formatTime(time: Instant): String =
-    DateTimeFormatter.ofPattern("MMM d, HH:mm").withZone(ZoneId.systemDefault()).format(time)

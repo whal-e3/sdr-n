@@ -10,6 +10,10 @@ import type {
   TransmitterStatus,
 } from "./types.ts";
 
+// Keep this aligned with Android CatalogParser.MAX_SATELLITES. Exceeding a
+// payload ceiling rejects the whole release instead of dropping source IDs.
+export const ANDROID_MAX_SATELLITES = 100_000;
+
 const REQUIRED_OMM_NUMBERS = [
   "MEAN_MOTION",
   "ECCENTRICITY",
@@ -17,6 +21,8 @@ const REQUIRED_OMM_NUMBERS = [
   "RA_OF_ASC_NODE",
   "ARG_OF_PERICENTER",
   "MEAN_ANOMALY",
+] as const;
+const OPTIONAL_OMM_NUMBERS = [
   "BSTAR",
   "MEAN_MOTION_DOT",
   "MEAN_MOTION_DDOT",
@@ -53,21 +59,44 @@ function numeric(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** Every distinct source ID must survive a latest-GP catalog build exactly once. */
+export function assertSpaceTrackCatalogCoverage(
+  source: readonly unknown[],
+  satellites: readonly Pick<CatalogSatellite, "noradId">[],
+): void {
+  const expected = new Set<string>();
+  for (const item of source) {
+    const id = noradId(objectValue(item).NORAD_CAT_ID);
+    if (!id) throw new Error("Space-Track coverage check encountered an invalid source ID");
+    expected.add(id);
+  }
+  const actual = new Set(satellites.map((satellite) => satellite.noradId));
+  if (actual.size !== satellites.length || actual.size !== expected.size ||
+      [...expected].some((id) => !actual.has(id))) {
+    throw new Error("Space-Track catalog does not retain every distinct source ID exactly once");
+  }
+}
+
 function normalizeOmm(value: unknown): OmmRecord {
   const raw = objectValue(value);
   const id = noradId(raw.NORAD_CAT_ID);
   if (!id || !isoUtc(raw.EPOCH) || typeof raw.OBJECT_NAME !== "string") {
-    throw new Error("CelesTrak OMM is missing a valid ID, name, or epoch");
+    throw new Error("OMM is missing a valid ID, name, or epoch");
   }
   for (const field of REQUIRED_OMM_NUMBERS) {
-    if (numeric(raw[field]) === null) throw new Error(`CelesTrak OMM ${id} has invalid ${field}`);
+    if (numeric(raw[field]) === null) throw new Error(`OMM ${id} has invalid ${field}`);
+  }
+  for (const field of OPTIONAL_OMM_NUMBERS) {
+    if (raw[field] !== null && raw[field] !== undefined && numeric(raw[field]) === null) {
+      throw new Error(`OMM ${id} has invalid ${field}`);
+    }
   }
   const omm: Record<string, OmmValue> = {};
   for (const [key, field] of Object.entries(raw)) {
     if (field === null || typeof field === "string" || typeof field === "boolean" || numeric(field) !== null) {
       omm[key] = field as OmmValue;
     } else {
-      throw new Error(`CelesTrak OMM ${id} has a non-scalar ${key}`);
+      throw new Error(`OMM ${id} has a non-scalar ${key}`);
     }
   }
   omm.NORAD_CAT_ID = id;
@@ -117,6 +146,7 @@ export function buildCatalog(
   transmitterInput: unknown,
   sequence: number,
   generatedAt: string,
+  orbitalSource: "celestrak" | "space-track" = "celestrak",
 ): CatalogManifestV1 {
   if (!Array.isArray(ommInput) || !Array.isArray(satelliteInput) || !Array.isArray(transmitterInput)) {
     throw new Error("Upstream data must contain three JSON arrays");
@@ -141,16 +171,22 @@ export function buildCatalog(
     transmittersByNorad.set(id, list);
   }
 
-  const seenIds = new Set<string>();
-  const satellites: CatalogSatellite[] = [];
-  let newestEpoch = 0;
+  // CelesTrak groups overlap, and a GP source can contain repeated IDs. Keep
+  // the newest published elements for each NORAD ID.
+  const orbitByNorad = new Map<string, OmmRecord>();
   for (const item of ommInput) {
     const omm = normalizeOmm(item);
+    const previous = orbitByNorad.get(omm.NORAD_CAT_ID);
+    if (!previous && orbitByNorad.size >= ANDROID_MAX_SATELLITES) {
+      throw new Error(`Catalog exceeds Android satellite count limit (${ANDROID_MAX_SATELLITES}); no source IDs were dropped`);
+    }
+    if (!previous || Date.parse(isoUtc(omm.EPOCH)!) > Date.parse(isoUtc(previous.EPOCH)!)) {
+      orbitByNorad.set(omm.NORAD_CAT_ID, omm);
+    }
+  }
+  const satellites: CatalogSatellite[] = [];
+  for (const omm of orbitByNorad.values()) {
     const id = omm.NORAD_CAT_ID;
-    if (seenIds.has(id)) throw new Error(`Duplicate CelesTrak NORAD ID ${id}`);
-    seenIds.add(id);
-    const epoch = isoUtc(omm.EPOCH)!;
-    newestEpoch = Math.max(newestEpoch, Date.parse(epoch));
     const satnogs = satellitesByNorad.get(id);
     const name = typeof satnogs?.name === "string" && satnogs.name.trim()
       ? satnogs.name.trim()
@@ -170,18 +206,24 @@ export function buildCatalog(
       .sort((a, b) => a.frequencyHz - b.frequencyHz || a.id.localeCompare(b.id));
     satellites.push({ noradId: id, name, aliases: [...aliases].sort(), omm, transmitters });
   }
-  if (satellites.length === 0) throw new Error("CelesTrak returned no usable OMM records");
+  if (satellites.length === 0) throw new Error("Upstream returned no usable OMM records");
+  if (orbitalSource === "space-track") assertSpaceTrackCatalogCoverage(ommInput, satellites);
   satellites.sort((a, b) => Number(a.noradId) - Number(b.noradId));
   return {
     schemaVersion: 1,
     sequence,
     generatedAt: isoUtc(generatedAt)!,
-    sourceUpdatedAt: new Date(newestEpoch).toISOString(),
+    // This is the successful upstream refresh time. An individual orbit's
+    // EPOCH can be in the future, so max(EPOCH) is not a valid freshness clock.
+    // The Android receiver checks the chosen orbit's epoch separately.
+    sourceUpdatedAt: isoUtc(generatedAt)!,
     satellites,
     attribution: [
-      "Orbital elements: CelesTrak (https://celestrak.org/).",
+      orbitalSource === "space-track"
+        ? "Orbital elements: USSPACECOM 18 SDS via Space-Track.org (https://www.space-track.org/); supplied GP records retained without epoch or decay filtering. Source-ID retention does not independently prove upstream completeness."
+        : "Orbital elements: CelesTrak (https://celestrak.org/).",
       "Satellite and transmitter metadata: SatNOGS DB, CC BY-SA 4.0 (https://db.satnogs.org/).",
-      "Decoder eligibility: Satellite Eavesdropper curated public-signal profiles.",
+      "Decoder eligibility: OrbitScope curated public-signal profiles.",
     ],
   };
 }

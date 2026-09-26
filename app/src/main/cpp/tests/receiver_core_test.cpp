@@ -47,6 +47,109 @@ double toneMagnitude(const std::vector<std::int16_t>& audio, double hz,
     return 2.0 * std::hypot(real, imaginary) / (audio.size() - start);
 }
 
+void feedFm(satellite_rx::ReceiverCore& receiver, std::uint32_t rate,
+            double raw_carrier_hz, double amplitude,
+            std::size_t total_iq) {
+    constexpr double pi = 3.14159265358979323846;
+    constexpr std::size_t batch_size = 4096;
+    double phase = 0.0;
+    std::size_t submitted = 0;
+    const auto before = receiver.stats().processed_complex_samples;
+    while (submitted < total_iq) {
+        const auto count = std::min(batch_size, total_iq - submitted);
+        std::vector<std::uint8_t> iq(2 * count);
+        for (std::size_t i = 0; i < count; ++i) {
+            const double time = static_cast<double>(submitted + i) / rate;
+            phase += 2.0 * pi * (raw_carrier_hz +
+                3000.0 * std::sin(2.0 * pi * 1000.0 * time)) / rate;
+            if (phase > pi || phase < -pi)
+                phase = std::remainder(phase, 2.0 * pi);
+            iq[2 * i] = static_cast<std::uint8_t>(std::lround(
+                127.5 + amplitude * std::cos(phase)));
+            iq[2 * i + 1] = static_cast<std::uint8_t>(std::lround(
+                127.5 + amplitude * std::sin(phase)));
+        }
+        CHECK(receiver.pushIq(iq.data(), iq.size()) == static_cast<int>(count));
+        submitted += count;
+        CHECK(waitFor(receiver, before + submitted));
+    }
+}
+
+void testAfcForOffset(std::uint32_t rate, double raw_carrier_hz,
+                      double predicted_hz) {
+    satellite_rx::ReceiverCore receiver(rate);
+    CHECK(receiver.configureNfm(5000.0, 0.0) == 0);
+    CHECK(receiver.setMode(static_cast<int>(
+        satellite_rx::ReceiverMode::NfmAudio)) == 0);
+    receiver.setCorrections(145800000.0, 0.0, predicted_hz);
+    feedFm(receiver, rate, raw_carrier_hz, 80.0, rate * 2);
+    const auto afc = receiver.afcStats();
+    CHECK(afc.tracking);
+    CHECK(std::abs(afc.applied_hz - (raw_carrier_hz - predicted_hz)) < 150.0);
+    CHECK(std::abs(afc.residual_hz) < 250.0);
+
+    // A discontinuous new orbital correction must discard old RF evidence.
+    receiver.setCorrections(145800000.0, 0.0, predicted_hz + 1000.0);
+    const auto before = receiver.stats().processed_complex_samples;
+    feedFm(receiver, rate, raw_carrier_hz, 80.0, 4096);
+    CHECK(receiver.stats().processed_complex_samples == before + 4096);
+    CHECK(!receiver.afcStats().tracking);
+    CHECK(receiver.afcStats().applied_hz == 0.0);
+
+    CHECK(receiver.setMode(static_cast<int>(
+        satellite_rx::ReceiverMode::SpectrumOnly)) == 0);
+    CHECK(receiver.generateTestTone(32000.0, 4096) == 4096);
+    CHECK(waitFor(receiver, before + 8192));
+    CHECK(!receiver.afcStats().tracking);
+    CHECK(receiver.afcStats().applied_hz == 0.0);
+}
+
+void testAfcRejectsNoiseAndCenterSpur() {
+    constexpr std::uint32_t rate = 256000;
+    using satellite_rx::ReceiverCore;
+    {
+        ReceiverCore receiver(rate);
+        CHECK(receiver.setMode(static_cast<int>(
+            satellite_rx::ReceiverMode::NfmAudio)) == 0);
+        std::uint32_t random = 0x7183ac4d;
+        std::size_t submitted = 0;
+        while (submitted < rate * 3 / 2) {
+            constexpr std::size_t count = 4096;
+            std::vector<std::uint8_t> iq(count * 2);
+            for (auto& byte : iq) {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                byte = static_cast<std::uint8_t>(random >> 24);
+            }
+            CHECK(receiver.pushIq(iq.data(), iq.size()) == count);
+            submitted += count;
+            CHECK(waitFor(receiver, submitted));
+        }
+        CHECK(!receiver.afcStats().tracking);
+        CHECK(receiver.afcStats().applied_hz == 0.0);
+    }
+    {
+        ReceiverCore receiver(rate);
+        CHECK(receiver.setMode(static_cast<int>(
+            satellite_rx::ReceiverMode::NfmAudio)) == 0);
+        receiver.setCorrections(145800000.0, 0.0, 1500.0);
+        // A modulated component at exact tuner center is indistinguishable
+        // from a modulated zero-IF artifact, so AFC must abstain.
+        feedFm(receiver, rate, 0.0, 80.0, rate * 3 / 2);
+        CHECK(!receiver.afcStats().tracking);
+        CHECK(receiver.afcStats().applied_hz == 0.0);
+    }
+    {
+        ReceiverCore receiver(rate);
+        CHECK(receiver.setMode(static_cast<int>(
+            satellite_rx::ReceiverMode::NfmAudio)) == 0);
+        feedFm(receiver, rate, 2000.0, 2.0, rate * 3 / 2);
+        CHECK(!receiver.afcStats().tracking);
+        CHECK(receiver.afcStats().applied_hz == 0.0);
+    }
+}
+
 void testNfmAudio(std::uint32_t rate) {
     using satellite_rx::ReceiverCore;
     constexpr double pi = 3.14159265358979323846;
@@ -112,6 +215,13 @@ int main() {
     CHECK(receiver.generateTestTone(tone, 4096) == 4096);
     CHECK(waitFor(receiver, 4096));
     CHECK(peakBin(receiver) == 160);
+    const auto iq_snapshot = receiver.iqSnapshot();
+    const auto [minimum_i, maximum_i] = std::minmax_element(
+        iq_snapshot.begin(), iq_snapshot.end());
+    CHECK(*minimum_i < -0.35f);
+    CHECK(*maximum_i > 0.35f);
+    CHECK(std::all_of(iq_snapshot.begin(), iq_snapshot.end(),
+                      [](float sample) { return std::isfinite(sample); }));
 
     // Mix away the predicted offset without a phase discontinuity.
     receiver.setCorrections(0.0, 0.0, tone);
@@ -135,5 +245,8 @@ int main() {
     CHECK(waitFor(receiver, 12288 + static_cast<std::uint64_t>(accepted)));
     testNfmAudio(256000);
     testNfmAudio(2400000);
+    testAfcForOffset(1024000, 2500.0, 500.0);
+    testAfcForOffset(256000, -2500.0, -500.0);
+    testAfcRejectsNoiseAndCenterSpur();
     return 0;
 }

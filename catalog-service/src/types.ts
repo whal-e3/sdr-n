@@ -79,6 +79,8 @@ export interface CatalogPointer {
   sequence: number;
   generatedAt: string;
   sourceUpdatedAt: string;
+  // Optional because pointers published before source tracking lack this field.
+  orbitalSource?: "celestrak" | "space-track";
   satelliteCount: number;
   transmitterCount: number;
   sha256: string;
@@ -96,4 +98,6 @@ export interface Env {
   CATALOG_BUCKET: R2Bucket;
   CATALOG_SIGNING_KEY_PKCS8_BASE64: string;
   SIGNING_KEY_ID: string;
+  SPACETRACK_IDENTITY?: string;
+  SPACETRACK_PASSWORD?: string;
 }

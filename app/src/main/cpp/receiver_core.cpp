@@ -130,6 +130,9 @@ int ReceiverCore::setMode(int mode) {
         mode != static_cast<int>(ReceiverMode::Ax25Afsk1200)) return -1;
     mode_.store(mode, std::memory_order_release);
     mode_generation_.fetch_add(1, std::memory_order_acq_rel);
+    hdlc_flag_candidates_.store(0, std::memory_order_relaxed);
+    failed_frame_crc_.store(0, std::memory_order_relaxed);
+    verified_frames_.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         audio_head_ = audio_tail_ = audio_size_ = 0;
@@ -152,6 +155,9 @@ int ReceiverCore::configureNfm(double deviation_hz,
     nfm_deemphasis_microseconds_.store(deemphasis_microseconds,
                                        std::memory_order_release);
     mode_generation_.fetch_add(1, std::memory_order_acq_rel);
+    hdlc_flag_candidates_.store(0, std::memory_order_relaxed);
+    failed_frame_crc_.store(0, std::memory_order_relaxed);
+    verified_frames_.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(audio_mutex_);
         audio_head_ = audio_tail_ = audio_size_ = 0;
@@ -188,10 +194,91 @@ std::array<float, kSpectrumBins> ReceiverCore::spectrum() const {
     return spectrum_;
 }
 
+std::array<float, kIqDisplaySamples * 2> ReceiverCore::iqSnapshot() const {
+    std::lock_guard<std::mutex> lock(iq_display_mutex_);
+    return iq_display_;
+}
+
 ReceiverStats ReceiverCore::stats() const {
     return {accepted_.load(std::memory_order_relaxed),
             dropped_.load(std::memory_order_relaxed),
             processed_.load(std::memory_order_relaxed)};
+}
+
+DecoderStats ReceiverCore::decoderStats() const {
+    return {hdlc_flag_candidates_.load(std::memory_order_relaxed),
+            failed_frame_crc_.load(std::memory_order_relaxed),
+            verified_frames_.load(std::memory_order_relaxed)};
+}
+
+AfcStats ReceiverCore::afcStats() const {
+    std::lock_guard<std::mutex> lock(afc_mutex_);
+    return afc_stats_;
+}
+
+void ReceiverCore::resetAfc() {
+    afc_correction_hz_ = 0.0;
+    afc_tracking_ = false;
+    afc_candidate_hz_ = 0.0;
+    afc_candidate_windows_ = 0;
+    afc_invalid_windows_ = 0;
+    have_previous_nominal_correction_ = false;
+    std::lock_guard<std::mutex> lock(afc_mutex_);
+    afc_stats_ = {false, 0.0, 0.0};
+}
+
+void ReceiverCore::updateAfc(const FmCarrierMeasurement& measurement,
+                             double nominal_correction_hz) {
+    constexpr double kMaxAfcHz = 4000.0;
+    // A zero-IF dongle can create a strong DC spur. A candidate whose
+    // inferred *raw* location is at the RF tuner center cannot distinguish
+    // that spur from a real signal, so it never drives AFC.
+    const double estimated_error_hz = afc_correction_hz_ +
+                                      measurement.residual_hz;
+    const double raw_offset_hz = nominal_correction_hz +
+                                 estimated_error_hz;
+    const bool credible =
+        std::isfinite(estimated_error_hz) &&
+        std::abs(estimated_error_hz) <= kMaxAfcHz &&
+        std::abs(raw_offset_hz) >= 300.0 &&
+        measurement.rms_amplitude >= 0.04 &&
+        measurement.power_variation < 0.25 &&
+        measurement.phase_coherence > 0.82 &&
+        measurement.phase_coherence < 0.997 &&
+        measurement.phase_stddev_hz > 250.0 &&
+        measurement.phase_stddev_hz < 5000.0;
+    if (!credible) {
+        afc_tracking_ = false;
+        afc_candidate_windows_ = 0;
+        // Hold through one bad half-second window, then discard the stale
+        // correction rather than following noise after a signal fades.
+        if (++afc_invalid_windows_ >= 2) afc_correction_hz_ = 0.0;
+        std::lock_guard<std::mutex> lock(afc_mutex_);
+        afc_stats_ = {false, afc_correction_hz_, 0.0};
+        return;
+    }
+
+    afc_invalid_windows_ = 0;
+    if (afc_candidate_windows_ == 0 ||
+        std::abs(estimated_error_hz - afc_candidate_hz_) > 350.0) {
+        afc_candidate_hz_ = estimated_error_hz;
+        afc_candidate_windows_ = 1;
+        afc_tracking_ = false;
+    } else {
+        afc_candidate_hz_ = 0.5 * (afc_candidate_hz_ + estimated_error_hz);
+        afc_candidate_windows_ = std::min(2, afc_candidate_windows_ + 1);
+        if (afc_candidate_windows_ >= 2) {
+            afc_correction_hz_ = afc_tracking_
+                ? 0.75 * afc_correction_hz_ + 0.25 * afc_candidate_hz_
+                : afc_candidate_hz_;
+            afc_correction_hz_ = std::clamp(afc_correction_hz_,
+                                            -kMaxAfcHz, kMaxAfcHz);
+            afc_tracking_ = true;
+        }
+    }
+    std::lock_guard<std::mutex> lock(afc_mutex_);
+    afc_stats_ = {afc_tracking_, afc_correction_hz_,
+                  afc_tracking_ ? measurement.residual_hz : 0.0};
 }
 
 void ReceiverCore::workerLoop() {
@@ -223,6 +310,7 @@ void ReceiverCore::process(const std::uint8_t* iq, std::size_t count) {
                        nfm_deemphasis_microseconds_.load(std::memory_order_acquire));
         nfm_.reset();
         ax25_.reset();
+        resetAfc();
         worker_mode_generation_ = generation;
     }
     const int mode = mode_.load(std::memory_order_acquire);
@@ -232,12 +320,29 @@ void ReceiverCore::process(const std::uint8_t* iq, std::size_t count) {
     std::vector<std::int16_t> produced_audio;
     if (audio_enabled || packet_enabled)
         produced_audio.reserve(count * kAudioSampleRate / sample_rate_ + 8);
-    const double offset_hz = center_frequency_hz_.load(std::memory_order_relaxed) *
+    const double nominal_correction_hz =
+        center_frequency_hz_.load(std::memory_order_relaxed) *
                                  ppm_.load(std::memory_order_relaxed) * 1e-6 +
                              doppler_hz_.load(std::memory_order_relaxed);
+    if (audio_enabled || packet_enabled) {
+        // A large change to the predicted tuning moves the entire channel.
+        // Discard the partial measurement before it can look like RF lock.
+        if (have_previous_nominal_correction_ &&
+            std::abs(nominal_correction_hz -
+                     previous_nominal_correction_hz_) > 200.0) {
+            nfm_.reset();
+            resetAfc();
+        }
+        previous_nominal_correction_hz_ = nominal_correction_hz;
+        have_previous_nominal_correction_ = true;
+    }
+    const double offset_hz = nominal_correction_hz + afc_correction_hz_;
     const double phase_increment = -2.0 * kPi * offset_hz / sample_rate_;
     const double rotation_cos = std::cos(phase_increment);
     const double rotation_sin = std::sin(phase_increment);
+    std::array<float, kIqDisplaySamples * 2> iq_display{};
+    const std::size_t display_start = count > kIqDisplaySamples
+        ? count - kIqDisplaySamples : 0;
     for (std::size_t i = 0; i < count; ++i) {
         const double raw_i = (static_cast<double>(iq[2 * i]) - 127.5) / 127.5;
         const double raw_q = (static_cast<double>(iq[2 * i + 1]) - 127.5) / 127.5;
@@ -253,6 +358,11 @@ void ReceiverCore::process(const std::uint8_t* iq, std::size_t count) {
                                                   raw_q * nco_sin_);
         const float mixed_q = static_cast<float>(raw_i * nco_sin_ +
                                                   raw_q * nco_cos_);
+        if (i >= display_start) {
+            const std::size_t display_index = i - display_start;
+            iq_display[2 * display_index] = mixed_i;
+            iq_display[2 * display_index + 1] = mixed_q;
+        }
         if (audio_enabled || packet_enabled)
             nfm_.push(mixed_i, mixed_q, produced_audio);
         if (spectrum_skip_ != 0) {
@@ -278,8 +388,25 @@ void ReceiverCore::process(const std::uint8_t* iq, std::size_t count) {
             nco_renormalize_count_ = 0;
         }
     }
+    {
+        std::lock_guard<std::mutex> lock(iq_display_mutex_);
+        iq_display_ = iq_display;
+    }
+    if ((audio_enabled || packet_enabled) &&
+        mode_generation_.load(std::memory_order_acquire) == generation) {
+        if (const auto measurement = nfm_.takeCarrierMeasurement())
+            updateAfc(*measurement, nominal_correction_hz);
+    }
     if (packet_enabled && !produced_audio.empty()) {
         ax25_.pushAudio(produced_audio.data(), produced_audio.size());
+        if (mode_generation_.load(std::memory_order_acquire) == generation) {
+            hdlc_flag_candidates_.store(ax25_.flagCandidateCount(),
+                                        std::memory_order_relaxed);
+            failed_frame_crc_.store(ax25_.badFcsCount(),
+                                    std::memory_order_relaxed);
+            verified_frames_.store(ax25_.validFrameCount(),
+                                   std::memory_order_relaxed);
+        }
         Ax25Frame frame;
         while (ax25_.popFrame(frame)) {
             // A mode change may have occurred while processing this batch.

@@ -9,7 +9,13 @@ object NativeReceiver {
     external fun nativePushIq(handle: Long, iq: ByteArray, length: Int): Int
     external fun nativeGenerateTestTone(handle: Long, toneHz: Double, sampleCount: Int): Int
     external fun nativeSpectrum(handle: Long): FloatArray
+    /** Latest 256 complex baseband samples as interleaved I/Q, before decoding. */
+    external fun nativeIqSnapshot(handle: Long): FloatArray
     external fun nativeStats(handle: Long): LongArray
+    /** AX.25 flag candidates, failed CRC frames, verified frames; zeros outside packet mode. */
+    external fun nativeDecoderStats(handle: Long): LongArray
+    /** [tracking 1/0, applied AFC Hz, last measured residual Hz] for FM modes. */
+    external fun nativeAfcStats(handle: Long): DoubleArray
     external fun nativeSetCorrections(handle: Long, centerFrequencyHz: Double, ppm: Double, dopplerHz: Double)
     external fun nativeSetMode(handle: Long, mode: Int): Int
     external fun nativeConfigureNfm(handle: Long, deviationHz: Double, deEmphasisUs: Double): Int

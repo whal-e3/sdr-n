@@ -2,6 +2,7 @@ package org.satelliteeavesdropper.orbit
 
 import java.time.Instant
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import org.junit.Assert.assertEquals
@@ -50,6 +51,55 @@ class SatelliteOrbitTest {
         assertTrue(clipped.single().endsAfterWindow)
     }
 
+    @Test fun shortGrazingPassBetweenCoarseSamplesIsFound() {
+        // The 20-second horizon crossing at t=25..45 s is below the horizon at
+        // both 120-second samples and even at their 60-second midpoint.
+        val orbit = SatelliteOrbit(TemeStateProvider { time ->
+            val seconds = (time.epochSecond - start.epochSecond) + time.nano / 1e9
+            val elevation = 1.0 - 0.1 * abs(seconds - 35.0)
+            val angle = Math.toRadians(elevation)
+            val range = 6_200.0
+            ecefAsTeme(time, Vector3(
+                earthRadiusKm + range * sin(angle),
+                range * cos(angle),
+                0.0,
+            ))
+        })
+        for (offset in listOf(0L, 60L, 120L)) {
+            assertTrue(orbit.lookFrom(observer, start.plusSeconds(offset)).elevationDegrees < 0.0)
+        }
+
+        val passes = orbit.predictPasses(observer, start, start.plusSeconds(120), stepSeconds = 120)
+        assertEquals(1, passes.size)
+        assertEquals(25.0, secondsAfterStart(passes.single().aos), 1.0)
+        assertEquals(35.0, secondsAfterStart(passes.single().tca), 1.0)
+        assertEquals(45.0, secondsAfterStart(passes.single().los), 1.0)
+        assertEquals(1.0, passes.single().maximumElevationDegrees, 0.05)
+    }
+
+    @Test fun deepBelowHorizonUsesOnlyCoarseSamples() {
+        var propagationCount = 0
+        val orbit = SatelliteOrbit(TemeStateProvider { time ->
+            propagationCount++
+            ecefAsTeme(time, Vector3(-earthRadiusKm - 500.0, 0.0, 0.0))
+        })
+        val passes = orbit.predictPasses(observer, start, start.plusSeconds(86_400), stepSeconds = 120)
+        assertTrue(passes.isEmpty())
+        assertEquals(721, propagationCount)
+    }
+
+    @Test fun adaptiveSearchKeepsRepresentativeDayBounded() {
+        val elements = valladoOmm()
+        val propagator = OrekitSgp4(elements)
+        var propagationCount = 0
+        val orbit = SatelliteOrbit(TemeStateProvider { time ->
+            propagationCount++
+            propagator.at(time)
+        })
+        orbit.predictPasses(observer, elements.epoch, elements.epoch.plusSeconds(86_400), stepSeconds = 120)
+        assertTrue("A day used $propagationCount propagations", propagationCount < 2_000)
+    }
+
     @Test fun polarAndDatelineObserversProduceFiniteLookAngles() {
         val orbit = SatelliteOrbit(valladoOmm())
         for (location in listOf(ObserverLocation(89.9, 179.9), ObserverLocation(-89.9, -179.9))) {
@@ -73,6 +123,9 @@ class SatelliteOrbitTest {
             Vector3(c * inertialVx - s * inertialVy, s * inertialVx + c * inertialVy, velocity.z),
         )
     }
+
+    private fun secondsAfterStart(time: Instant): Double =
+        (time.epochSecond - start.epochSecond) + time.nano / 1e9
 }
 
 internal fun valladoOmm() = OmmElements(

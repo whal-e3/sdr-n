@@ -147,6 +147,43 @@ int main() {
     CHECK(frame.ending_sample > 0);
     CHECK(!decoder.popFrame(frame));
 
+    // A CRC-valid HDLC payload is not necessarily an AX.25 packet. A call
+    // sign octet must be shifted left, leaving its extension bit clear.
+    decoder.reset();
+    auto invalid_address = body;
+    invalid_address[0] |= 1;
+    pushChunked(decoder, bell202Audio(makeBits(invalid_address)));
+    CHECK(decoder.flagCandidateCount() > 0);
+    CHECK(decoder.queuedFrames() == 0);
+    CHECK(decoder.validFrameCount() == 0);
+    pushChunked(decoder, bell202Audio(makeBits(body)));
+    CHECK(decoder.validFrameCount() == 1);
+    CHECK(decoder.popFrame(frame));
+    CHECK(frame.bytes == body);
+
+    decoder.reset();
+    invalid_address = body;
+    invalid_address[6] |= 1; // Destination cannot end the address field.
+    pushChunked(decoder, bell202Audio(makeBits(invalid_address)));
+    CHECK(decoder.queuedFrames() == 0);
+    CHECK(decoder.validFrameCount() == 0);
+
+    // A real optional repeater address remains valid when the source
+    // extension bit is cleared and the repeater terminates the field.
+    decoder.reset();
+    auto via_repeater = body;
+    via_repeater[13] &= static_cast<std::uint8_t>(~1u);
+    const std::vector<std::uint8_t> repeater = {
+        'W' << 1, 'I' << 1, 'D' << 1, 'E' << 1, '1' << 1, ' ' << 1,
+        0x61,
+    };
+    via_repeater.insert(via_repeater.begin() + 14,
+                        repeater.begin(), repeater.end());
+    pushChunked(decoder, bell202Audio(makeBits(via_repeater)));
+    CHECK(decoder.validFrameCount() == 1);
+    CHECK(decoder.popFrame(frame));
+    CHECK(frame.bytes == via_repeater);
+
     decoder.reset();
     pushChunked(decoder, bell202Audio(makeBits(body, true), 300));
     CHECK(decoder.queuedFrames() == 0);

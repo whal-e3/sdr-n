@@ -5,7 +5,9 @@ import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.FilterInputStream
 import java.io.InputStream
+import java.io.InputStreamReader
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.zip.GZIPInputStream
@@ -20,7 +22,9 @@ class SignedCatalogVerifier(publicKeyBase64: String) {
         compressed: ByteArray,
         signatureEnvelope: ByteArray,
         expectedSequence: Long? = null,
+        checkActive: () -> Unit = {},
     ): CatalogManifest {
+        checkActive()
         require(compressed.size in 1..MAX_COMPRESSED_BYTES) { "Catalog exceeds compressed size limit" }
         require(signatureEnvelope.size in 1..MAX_SIGNATURE_BYTES) { "Signature envelope exceeds size limit" }
 
@@ -48,11 +52,14 @@ class SignedCatalogVerifier(publicKeyBase64: String) {
         verifier.init(false, Ed25519PublicKeyParameters(publicKey, 0))
         verifier.update(compressed, 0, compressed.size)
         require(verifier.verifySignature(signature)) { "Catalog signature verification failed" }
+        checkActive()
 
-        val json = GZIPInputStream(ByteArrayInputStream(compressed)).use { input ->
-            input.readLimited(MAX_UNCOMPRESSED_BYTES).toString(Charsets.UTF_8)
+        val manifest = GZIPInputStream(ByteArrayInputStream(compressed)).use { input ->
+            val limited = CatalogSizeLimitedInputStream(input, MAX_UNCOMPRESSED_BYTES, checkActive)
+            CatalogParser.parse(InputStreamReader(limited, Charsets.UTF_8))
         }
-        return CatalogParser.parse(json).also { manifest ->
+        checkActive()
+        return manifest.also {
             require(manifest.sequence == sequence) { "Manifest and signature sequences differ" }
         }
     }
@@ -60,14 +67,44 @@ class SignedCatalogVerifier(publicKeyBase64: String) {
     companion object {
         const val MAX_COMPRESSED_BYTES = 6_000_000
         const val MAX_SIGNATURE_BYTES = 4_096
-        const val MAX_UNCOMPRESSED_BYTES = 20_000_000
+        // Bounds inflated bytes as they are streamed into the parser.
+        const val MAX_UNCOMPRESSED_BYTES = 40_000_000
     }
 }
 
-internal fun InputStream.readLimited(maxBytes: Int): ByteArray {
+private class CatalogSizeLimitedInputStream(
+    input: InputStream,
+    private val maxBytes: Int,
+    private val checkActive: () -> Unit,
+) :
+    FilterInputStream(input) {
+    private var count = 0
+
+    override fun read(): Int {
+        checkActive()
+        return super.read().also { value ->
+            if (value >= 0) addBytes(1)
+        }
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        checkActive()
+        return `in`.read(buffer, offset, length).also { value ->
+            if (value > 0) addBytes(value)
+        }
+    }
+
+    private fun addBytes(bytes: Int) {
+        require(bytes <= maxBytes - count) { "Catalog exceeds size limit" }
+        count += bytes
+    }
+}
+
+internal fun InputStream.readLimited(maxBytes: Int, checkActive: () -> Unit = {}): ByteArray {
     val output = ByteArrayOutputStream()
     val block = ByteArray(16_384)
     while (true) {
+        checkActive()
         val count = read(block)
         if (count < 0) break
         require(output.size() + count <= maxBytes) { "Catalog exceeds size limit" }

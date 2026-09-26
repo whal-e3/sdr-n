@@ -34,6 +34,9 @@ public:
     bool popFrame(Ax25Frame& output);
     std::size_t queuedFrames() const { return frames_.size(); }
     std::uint64_t validFrameCount() const { return valid_frame_count_; }
+    // Detected HDLC flag patterns across all symbol phases. A flag alone is
+    // only a candidate; random noise can produce one without a valid frame.
+    std::uint64_t flagCandidateCount() const { return flag_candidate_count_; }
     std::uint64_t badFcsCount() const { return bad_fcs_count_; }
     std::uint64_t oversizedFrameCount() const { return oversized_frame_count_; }
 
@@ -73,6 +76,7 @@ private:
     std::uint64_t last_frame_end_sample_ = 0;
     std::uint64_t sample_count_ = 0;
     std::uint64_t valid_frame_count_ = 0;
+    std::uint64_t flag_candidate_count_ = 0;
     std::uint64_t bad_fcs_count_ = 0;
     std::uint64_t oversized_frame_count_ = 0;
     double mark_cos_ = 1.0;

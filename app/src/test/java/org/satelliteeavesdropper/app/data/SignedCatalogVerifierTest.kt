@@ -4,13 +4,17 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.zip.GZIPOutputStream
+import kotlinx.coroutines.CancellationException
 
 class SignedCatalogVerifierTest {
     private val privateKey = Ed25519PrivateKeyParameters(SecureRandom())
@@ -20,6 +24,48 @@ class SignedCatalogVerifierTest {
     @Test
     fun acceptsSignedCompressedCatalog() {
         val compressed = gzip(manifest(sequence = 7))
+
+        val actual = verifier.verify(compressed, signature(compressed, 7), expectedSequence = 7)
+
+        assertEquals(7L, actual.sequence)
+        assertTrue(actual.satellites.isEmpty())
+    }
+
+    @Test(expected = CancellationException::class)
+    fun canceledLoadStopsDuringStreamingInsteadOfFinishingTheCatalog() {
+        val compressed = gzipManifestWithPadding(100_000)
+        var reads = 0
+        verifier.verify(compressed, signature(compressed, 7), checkActive = {
+            // Entry and post-signature checks precede the first stream read.
+            if (++reads == 4) throw CancellationException("Activity disposed")
+        })
+    }
+
+    @Test
+    fun signedStreamingPathPreservesOrbitAndReceiverFields() {
+        val compressed = gzip(File("src/main/assets/sample_catalog.json").readText())
+
+        val actual = verifier.verify(compressed, signature(compressed, 1), expectedSequence = 1)
+
+        val iss = actual.satellites.first { it.noradId == "25544" }
+        assertEquals("ISS", iss.name)
+        assertEquals(listOf("ISS (ZARYA)"), iss.aliases)
+        assertNotNull(iss.orbitElements())
+        assertEquals("1998-067A", iss.orbitElements()?.objectId)
+        val packet = iss.transmitters.first { it.decoderId == "AX25_AFSK1200" }
+        assertEquals(145_825_000L, packet.frequencyHz)
+        assertEquals(12_000L, packet.bandwidthHz)
+        assertEquals(1_200, packet.baud)
+        assertEquals(1_024_000, packet.captureRateSps)
+        assertEquals("amateur", packet.policy)
+        assertEquals("VHF satellite antenna for 145.825 MHz", packet.antenna)
+        assertTrue(packet.evidenceUrls.any { it.startsWith("https://") })
+    }
+
+    @Test
+    fun acceptsSignedCatalogAboveTheFormerTwentyMegabyteInflatedLimit() {
+        val compressed = gzipManifestWithPadding(20_000_000)
+        assertTrue(compressed.size < SignedCatalogVerifier.MAX_COMPRESSED_BYTES)
 
         val actual = verifier.verify(compressed, signature(compressed, 7), expectedSequence = 7)
 
@@ -60,7 +106,7 @@ class SignedCatalogVerifierTest {
         val compressed = ByteArray(SignedCatalogVerifier.MAX_COMPRESSED_BYTES + 1)
         expectRejected("size limit") { verifier.verify(compressed, signatureEnvelope = byteArrayOf(1)) }
 
-        val bomb = gzip(manifest(extra = "x".repeat(SignedCatalogVerifier.MAX_UNCOMPRESSED_BYTES)))
+        val bomb = gzipManifestWithPadding(SignedCatalogVerifier.MAX_UNCOMPRESSED_BYTES)
         assertTrue(bomb.size < SignedCatalogVerifier.MAX_COMPRESSED_BYTES)
         expectRejected("size limit") { verifier.verify(bomb, signature(bomb, 7)) }
     }
@@ -78,6 +124,26 @@ class SignedCatalogVerifierTest {
     private fun gzip(plain: String): ByteArray = ByteArrayOutputStream().also { bytes ->
         GZIPOutputStream(bytes).use { it.write(plain.toByteArray(Charsets.UTF_8)) }
     }.toByteArray()
+
+    /** Builds a large, valid manifest without first allocating an equally large padding String. */
+    private fun gzipManifestWithPadding(paddingBytes: Int): ByteArray {
+        val empty = manifest()
+        val marker = "\"padding\":\"\""
+        val insertion = empty.indexOf(marker).also { require(it >= 0) } + marker.length - 1
+        return ByteArrayOutputStream().also { bytes ->
+            GZIPOutputStream(bytes).use { gzip ->
+                gzip.write(empty.substring(0, insertion).toByteArray(Charsets.UTF_8))
+                gzip.writeRepeated('x'.code.toByte(), paddingBytes)
+                gzip.write(empty.substring(insertion).toByteArray(Charsets.UTF_8))
+            }
+        }.toByteArray()
+    }
+
+    private fun OutputStream.writeRepeated(value: Byte, count: Int) {
+        val block = ByteArray(16_384) { value }
+        repeat(count / block.size) { write(block) }
+        write(block, 0, count % block.size)
+    }
 
     private fun signature(compressed: ByteArray, sequence: Long): ByteArray {
         val signer = Ed25519Signer()

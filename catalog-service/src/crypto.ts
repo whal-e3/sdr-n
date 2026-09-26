@@ -13,8 +13,11 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export async function gzipJson(value: unknown): Promise<Uint8Array<ArrayBuffer>> {
+export async function gzipJson(value: unknown, maxPlainBytes?: number): Promise<Uint8Array<ArrayBuffer>> {
   const plain = new TextEncoder().encode(JSON.stringify(value));
+  if (maxPlainBytes !== undefined && plain.byteLength > maxPlainBytes) {
+    throw new Error("Catalog exceeds Android uncompressed size limit");
+  }
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(plain);

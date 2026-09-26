@@ -67,6 +67,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.orekit:orekit:12.1.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
+    implementation("com.google.code.gson:gson:2.11.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
