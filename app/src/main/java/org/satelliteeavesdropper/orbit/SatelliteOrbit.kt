@@ -16,6 +16,23 @@ class SatelliteOrbit internal constructor(private val source: TemeStateProvider)
     fun lookFrom(observer: ObserverLocation, at: Instant): SatelliteLook = ObserverFrame(observer).look(at, source.at(at))
 
     /**
+     * Propagates at [at] and rotates TEME into the globe's Earth-fixed orientation at [rotationAt].
+     * Use the default for a ground track; hold [rotationAt] fixed to draw an orbit arc against the
+     * Earth orientation of the current frame. UTC approximates UT1, as in [lookFrom].
+     */
+    fun earthFixedPosition(at: Instant, rotationAt: Instant = at): EarthFixedPosition {
+        val position = source.at(at).position
+        val theta = gmstRadians(rotationAt)
+        val c = cos(theta)
+        val s = sin(theta)
+        return EarthFixedPosition(
+            c * position.x + s * position.y,
+            -s * position.x + c * position.y,
+            position.z,
+        )
+    }
+
+    /**
      * Finds intervals at or above [minElevationDegrees] in [start, end]. AOS and LOS are
      * refined to within one second; an interval crossing either window edge is marked.
      * Keep OMM data fresh before calling this method: stale SGP4 results are not rejected here.
@@ -163,20 +180,7 @@ private class ObserverFrame(observer: ObserverLocation) {
     private val cosLat = cos(latitude)
     private val sinLon = sin(longitude)
     private val cosLon = cos(longitude)
-    private val position: Vector3
-
-    init {
-        val a = 6_378.137 // WGS84 equatorial radius, km
-        val flattening = 1.0 / 298.257223563
-        val eccentricitySquared = flattening * (2.0 - flattening)
-        val primeVerticalRadius = a / sqrt(1.0 - eccentricitySquared * sinLat * sinLat)
-        val altitudeKm = observer.altitudeMeters / 1_000.0
-        position = Vector3(
-            (primeVerticalRadius + altitudeKm) * cosLat * cosLon,
-            (primeVerticalRadius + altitudeKm) * cosLat * sinLon,
-            (primeVerticalRadius * (1.0 - eccentricitySquared) + altitudeKm) * sinLat,
-        )
-    }
+    private val position = earthSurfacePosition(observer)
 
     fun look(time: Instant, state: TemeState): SatelliteLook {
         // TEME -> pseudo Earth-fixed using Vallado GMST. UT1 is approximated by UTC;
@@ -192,9 +196,9 @@ private class ObserverFrame(observer: ObserverLocation) {
         val vy = -s * state.velocity.x + c * state.velocity.y - omega * x
         val vz = state.velocity.z
 
-        val dx = x - position.x
-        val dy = y - position.y
-        val dz = z - position.z
+        val dx = x - position.xKm
+        val dy = y - position.yKm
+        val dz = z - position.zKm
         val range = sqrt(dx * dx + dy * dy + dz * dz)
         require(range > 0.0 && range.isFinite()) { "Invalid propagated satellite range" }
         val east = -sinLon * dx + cosLon * dy

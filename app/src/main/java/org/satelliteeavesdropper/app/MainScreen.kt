@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -66,6 +67,7 @@ import org.satelliteeavesdropper.app.data.isFreshWithin72Hours
 import org.satelliteeavesdropper.app.data.mergeTrackingCatalog
 import org.satelliteeavesdropper.app.day.DayScheduleScreen
 import org.satelliteeavesdropper.app.day.DayScheduleCache
+import org.satelliteeavesdropper.app.globe.GlobeScreen
 import org.satelliteeavesdropper.app.receiver.ReceptionState
 import org.satelliteeavesdropper.app.receiver.ReceptionSnapshot
 import org.satelliteeavesdropper.app.receiver.SignalVisuals
@@ -114,6 +116,8 @@ internal fun SatelliteScreen(
     val observerPreferences = remember(context) { ObserverPreferences(context) }
     val savedObserver = remember(observerPreferences) { observerPreferences.load() }
     var tab by rememberSaveable { mutableStateOf(AppTab.SKY) }
+    var skyGlobe by rememberSaveable { mutableStateOf(false) }
+    var globeSelectedNoradId by rememberSaveable { mutableStateOf<String?>(null) }
     var signedCatalog by remember { mutableStateOf<CatalogLoadResult?>(null) }
     var supplemental by remember { mutableStateOf<List<OrbitLookupResult.Found>>(emptyList()) }
     var imported by remember { mutableStateOf<OrbitImportSnapshot?>(null) }
@@ -146,7 +150,10 @@ internal fun SatelliteScreen(
     var lookupMessage by remember { mutableStateOf<String?>(null) }
     var importRunning by remember { mutableStateOf(false) }
     var importMessage by remember { mutableStateOf<String?>(null) }
-    var selected by remember { mutableStateOf<SatelliteRecord?>(null) }
+    var selectedNoradId by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = remember(selectedNoradId, catalog) {
+        catalog?.manifest?.satellites?.firstOrNull { it.noradId == selectedNoradId }
+    }
     var recommended by remember { mutableStateOf<SatelliteRecord?>(null) }
     var userSelectedObserver by remember { mutableStateOf(savedObserver.selectedObserver) }
     var observer by remember { mutableStateOf(savedObserver.activeObserver) }
@@ -310,9 +317,10 @@ internal fun SatelliteScreen(
             }
             val loaded = repository.load()
             signedCatalog = loaded
-            selected = selected?.takeIf { old ->
-                loaded.manifest.satellites.any { it.noradId == old.noradId } ||
-                    supplementalRecords.containsKey(old.noradId)
+            selectedNoradId = selectedNoradId?.takeIf { id ->
+                loaded.manifest.satellites.any { it.noradId == id } ||
+                    supplemental.any { it.noradId == id } ||
+                    imported?.records?.any { it.noradId == id } == true
             }
             catalogError = null
         } catch (error: Exception) {
@@ -373,6 +381,7 @@ internal fun SatelliteScreen(
         recommended = null
         if (!locationPermissionGranted) {
             locationState = DeviceLocationState.PermissionRequired
+            locationMessage = "Location permission is needed for automatic positioning."
             return@LaunchedEffect
         }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -384,12 +393,14 @@ internal fun SatelliteScreen(
                 if (state is DeviceLocationState.Fix) {
                     val update = automaticObserverUpdate(dayScheduleObserver, state.observer)
                     setObserver(update.active, "Automatic · ${state.provider}", update.daySchedule)
-                } else if (state is DeviceLocationState.Searching && state.takingLonger) {
-                    // The current fix expired, but Android is still searching for a new one.
+                } else if (state is DeviceLocationState.Searching) {
+                    // A restarted or expired search has no current fix; clear earlier failure text.
                     observer = null
                     dayScheduleObserver = null
-                    locationMessage = "Still waiting for a current device location fix."
-                } else if (state !is DeviceLocationState.Searching) {
+                    locationMessage = if (state.takingLonger)
+                        "Still waiting for a current device location fix."
+                    else "Searching for a current device location fix."
+                } else {
                     // Never keep using an unavailable automatic fix for tuning.
                     observer = null
                     dayScheduleObserver = null
@@ -556,12 +567,27 @@ internal fun SatelliteScreen(
         },
     ) { contentPadding ->
         when (tab) {
-            AppTab.SKY -> DayScheduleScreen(
+            AppTab.SKY -> Column(Modifier.fillMaxSize().padding(contentPadding)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !skyGlobe, onClick = { skyGlobe = false },
+                        label = { Text("List") })
+                    FilterChip(selected = skyGlobe, onClick = { skyGlobe = true },
+                        label = { Text("Globe") })
+                }
+                if (skyGlobe) GlobeScreen(
+                    catalog = catalog,
+                    observer = observer,
+                    selectedNoradId = globeSelectedNoradId,
+                    onSelectionChanged = { globeSelectedNoradId = it },
+                    onTrack = { selectedNoradId = it.noradId; tab = AppTab.TARGET },
+                    modifier = Modifier.weight(1f),
+                ) else DayScheduleScreen(
                 catalog = catalog,
                 observer = dayScheduleObserver,
-                onSatelliteSelected = { selected = it; tab = AppTab.TARGET },
+                onSatelliteSelected = { selectedNoradId = it.noradId; tab = AppTab.TARGET },
                 scheduleCache = dayScheduleCache,
-                modifier = Modifier.padding(contentPadding),
+                modifier = Modifier.weight(1f),
                 onMissingNoradLookup = ::lookUpMissingOrbit,
                 lookupRunning = lookupRunning,
                 lookupMessage = lookupMessage,
@@ -570,7 +596,8 @@ internal fun SatelliteScreen(
                 importRunning = importRunning,
                 importMessage = importMessage,
                 importedCount = imported?.records?.size ?: 0,
-            )
+                )
+            }
             AppTab.TARGET -> LazyColumn(
                 Modifier.fillMaxSize().padding(contentPadding).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -589,7 +616,7 @@ internal fun SatelliteScreen(
                         Text(currentRecommendation.name, style = MaterialTheme.typography.titleLarge)
                         Text("Highest visible, configured public downlink in the current catalog.",
                             color = OrbitColors.muted)
-                        if (selected != null) OutlinedButton(onClick = { selected = null }) { Text("Track suggested target") }
+                        if (selected != null) OutlinedButton(onClick = { selectedNoradId = null }) { Text("Track suggested target") }
                     }
                 }
                 if (target == null) item {
@@ -606,6 +633,11 @@ internal fun SatelliteScreen(
                                 color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
                             Text(target.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text("NORAD ${target.noradId} · ${target.transmitters.size} cataloged downlinks")
+                            OutlinedButton(onClick = {
+                                globeSelectedNoradId = target.noradId
+                                skyGlobe = true
+                                tab = AppTab.SKY
+                            }) { Text("View on globe") }
                             target.orbitHistoryLabel(targetNow)?.let { Text(it, color = OrbitColors.amber) }
                             if (target.transmitters.isNotEmpty()) {
                                 Text("${targetDownlinks?.receiverConfigured?.size ?: 0} configured for this receiver · " +
@@ -652,7 +684,7 @@ internal fun SatelliteScreen(
                             Text(if (targetIsHistorical) "Historical record" else "Tracking only", style = MaterialTheme.typography.titleMedium)
                             Text(if (targetIsHistorical)
                                 "No transmitter is configured for this historical record. Its orbital elements remain available in Sky."
-                            else "No transmitter is configured for this orbital record. Its position and passes can still be tracked.")
+                            else "No transmitter is configured for this orbital record. Orbit tracking requires usable elements.")
                         }
                     }
                     if (targetDownlinks?.receiverConfigured?.isNotEmpty() == true) item {

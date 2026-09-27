@@ -37,7 +37,6 @@ import java.util.Locale
 import java.util.UUID
 
 internal data class UsbChoice(val device: UsbDevice, val type: Int, val label: String)
-private data class DiagnosticTuning(val satellite: SatelliteRecord, val transmitter: TransmitterRecord)
 private data class PendingReception(
     val choice: UsbChoice,
     val satellite: SatelliteRecord,
@@ -199,25 +198,7 @@ class MainActivity : ComponentActivity() {
             diagnosticMessage = "A current signed catalog is required for the USB IQ check."
             return
         }
-        val eligible = catalog.manifest.satellites.asSequence()
-            .filter { satellite ->
-                satellite.orbitElements()?.epoch?.let { isFreshWithin72Hours(it, now) } == true
-            }
-            .flatMap { satellite ->
-                satellite.transmitters.asSequence().map { DiagnosticTuning(satellite, it) }
-            }
-            .filter { tuning ->
-                val tx = tuning.transmitter
-                tx.mayReceive && tx.status == "active" && tx.decoderId != null &&
-                    tx.frequencyHz > 0 &&
-                    (tx.captureRateSps == 1_024_000 || tx.captureRateSps == 2_400_000)
-            }
-            .toList()
-        val tuning = eligible.firstOrNull {
-            it.satellite.noradId == "25544" &&
-                it.transmitter.frequencyHz == 145_825_000L &&
-                it.transmitter.decoderId == "AX25_AFSK1200"
-        } ?: eligible.firstOrNull()
+        val tuning = selectUsbDiagnosticTuning(catalog, now)
         if (tuning == null) {
             diagnosticMessage = "No current curated public/amateur downlink is available for the USB IQ check."
             return
