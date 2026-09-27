@@ -10,6 +10,8 @@ import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +29,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -80,9 +83,14 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 
 private enum class AppTab(val label: String, val symbol: String) {
     SKY("Sky", "◎"), TARGET("Target", "◈"), SIGNAL("Signal", "≋"), LOCATION("Location", "⌖"),
+}
+
+private enum class SignalSource(val label: String) {
+    RECEIVER("Receiver"), SDR_TESTER("SDR tester"), TEST_TONE("Test tone"),
 }
 
 /**
@@ -96,9 +104,11 @@ internal fun SatelliteScreen(
     diagnosticDevices: List<UsbChoice>?,
     diagnosticMessage: String?,
     diagnosticCaptureRunning: Boolean,
+    diagnosticSnapshot: ReceptionSnapshot?,
     scanUsbSdr: () -> Unit,
     requestUsbAccess: (UsbChoice) -> Unit,
-    captureUsbIq: (UsbChoice, CatalogLoadResult?) -> Unit,
+    captureUsbIq: (UsbChoice, String) -> Unit,
+    stopUsbTest: () -> Unit,
     startReception: (UsbChoice, SatelliteRecord, TransmitterRecord, ObserverLocation, Boolean, Long?) -> Unit,
     stopReception: () -> Unit,
 ) {
@@ -181,11 +191,17 @@ internal fun SatelliteScreen(
     var nextPass by remember { mutableStateOf<SatellitePass?>(null) }
     var targetPredictionError by remember { mutableStateOf<String?>(null) }
     var targetNow by remember { mutableStateOf(Instant.now()) }
+    var signalSource by rememberSaveable { mutableStateOf(SignalSource.RECEIVER) }
+    var testFrequencyMHz by rememberSaveable { mutableStateOf("100.000") }
+    var demoToneHz by rememberSaveable { mutableStateOf(32_000f) }
     var demoRunning by remember { mutableStateOf(false) }
     var demoSnapshot by remember { mutableStateOf<ReceptionSnapshot?>(null) }
     var demoError by remember { mutableStateOf<String?>(null) }
     val reception by ReceptionState.snapshots.collectAsState()
     val receiving = reception.state == "Starting" || reception.state == "Receiving"
+    LaunchedEffect(receiving, diagnosticCaptureRunning) {
+        if (receiving || diagnosticCaptureRunning) demoRunning = false
+    }
 
     // Automatic fixes update only the matching active receive session. Manual/map selection
     // during a session leaves its target and last observer in place until it is restarted.
@@ -482,50 +498,59 @@ internal fun SatelliteScreen(
     }
     LaunchedEffect(demoRunning) {
         if (!demoRunning) {
-            demoSnapshot = null
+            demoSnapshot = demoSnapshot?.copy(state = "Synthetic stopped")
             return@LaunchedEffect
         }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-        var handle = 0L
-        val waterfall = ArrayDeque<List<Float>>()
-        var lastProcessed = 0L
-        try {
-            handle = NativeReceiver.nativeCreate(1_024_000)
-            check(handle != 0L) { "Native test receiver could not start" }
-            while (isActive) {
-                NativeReceiver.nativeGenerateTestTone(handle, 32_000.0, 16_384)
-                delay(400)
-                val spectrum = NativeReceiver.nativeSpectrum(handle).toList()
-                val stats = NativeReceiver.nativeStats(handle)
-                val processed = stats.getOrElse(2) { 0 }
-                if (processed > lastProcessed && spectrum.size == 256) {
-                    waterfall.addLast(List(128) { index ->
-                        maxOf(spectrum[2 * index], spectrum[2 * index + 1])
-                    })
-                    while (waterfall.size > 48) waterfall.removeFirst()
+            var handle = 0L
+            val sessionId = UUID.randomUUID().toString()
+            val waterfall = ArrayDeque<List<Float>>()
+            var lastProcessed = 0L
+            var samplesUpdatedAtElapsedMs: Long? = null
+            demoSnapshot = ReceptionSnapshot(state = "Synthetic preview", sessionId = sessionId,
+                device = "Generated IQ · no USB", sampleRateSps = 1_024_000)
+            try {
+                handle = NativeReceiver.nativeCreate(1_024_000)
+                check(handle != 0L) { "Native test receiver could not start" }
+                while (isActive) {
+                    check(NativeReceiver.nativeGenerateTestTone(handle, demoToneHz.toDouble(), 16_384) >= 0) {
+                        "Could not generate test IQ"
+                    }
+                    delay(100)
+                    val spectrum = NativeReceiver.nativeSpectrum(handle).toList()
+                    val stats = NativeReceiver.nativeStats(handle)
+                    val processed = stats.getOrElse(2) { 0 }
+                    if (processed > lastProcessed) {
+                        samplesUpdatedAtElapsedMs = SystemClock.elapsedRealtime()
+                        if (spectrum.size == 256) {
+                            waterfall.addLast(List(128) { index ->
+                                maxOf(spectrum[2 * index], spectrum[2 * index + 1])
+                            })
+                            while (waterfall.size > 48) waterfall.removeFirst()
+                        }
+                    }
+                    lastProcessed = processed
+                    demoSnapshot = ReceptionSnapshot(
+                        state = "Synthetic preview", sessionId = sessionId,
+                        device = "Generated IQ · no USB", spectrum = spectrum,
+                        iqSamples = NativeReceiver.nativeIqSnapshot(handle).toList(),
+                        spectrogram = waterfall.toList(), acceptedSamples = stats.getOrElse(0) { 0 },
+                        droppedSamples = stats.getOrElse(1) { 0 }, processedSamples = processed,
+                        samplesUpdatedAtElapsedMs = samplesUpdatedAtElapsedMs, sampleRateSps = 1_024_000,
+                    )
                 }
-                lastProcessed = processed
-                demoSnapshot = ReceptionSnapshot(
-                    state = "Synthetic preview",
-                    device = "Generated IQ · no USB",
-                    spectrum = spectrum,
-                    iqSamples = NativeReceiver.nativeIqSnapshot(handle).toList(),
-                    spectrogram = waterfall.toList(),
-                    acceptedSamples = stats.getOrElse(0) { 0 },
-                    droppedSamples = stats.getOrElse(1) { 0 },
-                    processedSamples = processed,
-                    sampleRateSps = 1_024_000,
-                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                demoError = error.message ?: "Native receiver unavailable"
+                demoSnapshot = demoSnapshot?.copy(state = "Synthetic stopped", error = demoError)
+                demoRunning = false
+            } finally {
+                if (demoSnapshot?.sessionId == sessionId) {
+                    demoSnapshot = demoSnapshot?.copy(state = "Synthetic stopped")
+                }
+                if (handle != 0L) NativeReceiver.nativeDestroy(handle)
             }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            demoError = error.message ?: "Native receiver unavailable"
-            demoRunning = false
-        } finally {
-            demoSnapshot = null
-            if (handle != 0L) NativeReceiver.nativeDestroy(handle)
-        }
         }
     }
 
@@ -781,63 +806,104 @@ internal fun SatelliteScreen(
             ) {
                 item {
                     Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Receiver lab", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                        Text("Follow samples, tuning, signal shape and valid decoder output as separate stages.",
-                            color = OrbitColors.muted)
-                    }
-                }
-                item {
-                    OrbitPanel {
-                        Text("LIVE RECEIVER", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
-                        Text(reception.error ?: reception.state, style = MaterialTheme.typography.titleLarge,
-                            color = if (reception.error == null) OrbitColors.white else OrbitColors.red)
-                        if (reception.device.isNotEmpty()) Text(reception.device)
-                        if (reception.state == "Starting" || reception.state == "Receiving") {
-                            Text("${reception.processedSamples} complex samples processed · ${reception.droppedSamples} dropped")
-                            OutlinedButton(onClick = stopReception) { Text("Stop receiver") }
-                        }
-                        usbMessage?.let { Text(it, color = OrbitColors.amber) }
-                    }
-                }
-                if (reception.state != "Idle" || reception.error != null) item {
-                    SignalVisuals(reception)
-                }
-                if (reception.packets.isNotEmpty()) item {
-                    OrbitPanel {
-                        Text("CRC-CHECKED AX.25 FRAMES", color = OrbitColors.cyan,
-                            style = MaterialTheme.typography.labelMedium)
-                        reception.packets.takeLast(10).forEach { Text(it) }
-                    }
-                }
-                item {
-                    OrbitPanel {
-                        Text("USB SDR DIAGNOSTIC", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
-                        Text("Check detection, Android USB permission and a short IQ stream. Samples alone do not prove decoding.")
-                        OutlinedButton(onClick = scanUsbSdr) { Text("Scan USB SDR") }
-                        diagnosticDevices?.forEach { choice ->
-                            Text(choice.label)
-                            Button(onClick = { requestUsbAccess(choice) }) { Text("Request USB access") }
-                            OutlinedButton(onClick = { captureUsbIq(choice, catalog) }, enabled = !diagnosticCaptureRunning) {
-                                Text(if (diagnosticCaptureRunning) "Checking USB IQ…" else "Check USB IQ for 3 seconds")
+                        Text("Signal lab", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SignalSource.entries.forEach { source ->
+                                FilterChip(selected = signalSource == source, onClick = {
+                                    signalSource = source
+                                    if (source != SignalSource.TEST_TONE) demoRunning = false
+                                }, label = { Text(source.label) })
                             }
                         }
-                        diagnosticMessage?.let { Text(it, color = OrbitColors.amber) }
                     }
                 }
-                item {
-                    OrbitPanel {
-                        Text("SYNTHETIC TEST TONE", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
-                        Text("Generated IQ exercises the native spectrum pipeline without hardware. It is not a satellite signal.")
-                        Button(onClick = { demoRunning = !demoRunning; demoError = null }) {
-                            Text(if (demoRunning) "Stop test tone" else "Start test tone")
+                when (signalSource) {
+                    SignalSource.RECEIVER -> {
+                        item {
+                            OrbitPanel {
+                                Text("SATELLITE RECEIVER", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
+                                Text(reception.error ?: reception.state, style = MaterialTheme.typography.titleLarge,
+                                    color = if (reception.error == null) OrbitColors.white else OrbitColors.red)
+                                if (reception.device.isNotEmpty()) Text(reception.device)
+                                if (reception.state in setOf("Starting", "Receiving")) {
+                                    Text("${reception.processedSamples} complex samples processed · ${reception.droppedSamples} dropped")
+                                    OutlinedButton(onClick = stopReception) { Text("Stop receiver") }
+                                } else if (reception.state == "Idle") {
+                                    Text("Select a visible satellite and configured downlink in Target to start receiving.")
+                                }
+                                usbMessage?.let { Text(it, color = OrbitColors.amber) }
+                            }
                         }
-                        demoError?.let { Text(it, color = OrbitColors.red) }
+                        item { SignalVisuals(reception) }
+                        if (reception.packets.isNotEmpty()) item {
+                            OrbitPanel {
+                                Text("CRC-CHECKED AX.25 FRAMES", color = OrbitColors.cyan,
+                                    style = MaterialTheme.typography.labelMedium)
+                                reception.packets.takeLast(10).forEach { Text(it) }
+                            }
+                        }
+                    }
+                    SignalSource.SDR_TESTER -> {
+                        item {
+                            OrbitPanel {
+                                Text("SDR HARDWARE TEST", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
+                                Text("Check USB access and sample streaming without a satellite signal, location or catalog.")
+                                Text("Runs for 10 seconds, receive only, decoder off. Noise is enough for this check; it does not prove antenna performance or decoding.",
+                                    color = OrbitColors.muted, style = MaterialTheme.typography.bodySmall)
+                                OutlinedTextField(testFrequencyMHz, { testFrequencyMHz = it },
+                                    label = { Text("Test frequency (MHz)") }, singleLine = true,
+                                    enabled = !diagnosticCaptureRunning, modifier = Modifier.fillMaxWidth())
+                                Text("Use a frequency supported by your SDR. Default: 100 MHz.",
+                                    color = OrbitColors.muted, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = scanUsbSdr, enabled = !diagnosticCaptureRunning) { Text("Scan USB SDR") }
+                                if (diagnosticDevices.isNullOrEmpty()) {
+                                    Text("Connect an RTL-SDR or HackRF One through a working USB OTG adapter, then scan.")
+                                }
+                                diagnosticDevices?.forEach { choice ->
+                                    Text(choice.label)
+                                    Button(onClick = {
+                                        demoRunning = false
+                                        captureUsbIq(choice, testFrequencyMHz)
+                                    }, enabled = !diagnosticCaptureRunning && reception.state !in setOf("Starting", "Receiving")) {
+                                        Text("Test SDR for 10 seconds")
+                                    }
+                                    OutlinedButton(onClick = { requestUsbAccess(choice) }, enabled = !diagnosticCaptureRunning) {
+                                        Text("Request USB access")
+                                    }
+                                }
+                                if (reception.state in setOf("Starting", "Receiving")) {
+                                    Text("Stop the satellite receiver before testing the SDR.", color = OrbitColors.amber)
+                                }
+                                if (diagnosticCaptureRunning) {
+                                    OutlinedButton(onClick = stopUsbTest) { Text("Stop SDR test") }
+                                }
+                                diagnosticMessage?.let { Text(it, color = OrbitColors.amber) }
+                            }
+                        }
+                        if (diagnosticSnapshot != null) item { SignalVisuals(diagnosticSnapshot) }
+                    }
+                    SignalSource.TEST_TONE -> {
+                        item {
+                            OrbitPanel {
+                                Text("GENERATED TEST TONE", color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
+                                Text("Exercises the plots using locally generated IQ. This does not test an attached SDR.")
+                                Text("Tone: ${"%.1f".format(Locale.US, demoToneHz / 1_000f)} kHz")
+                                Slider(value = demoToneHz, onValueChange = { demoToneHz = it }, valueRange = 1_000f..100_000f)
+                                Button(onClick = { demoRunning = !demoRunning; demoError = null },
+                                    enabled = demoRunning || (!diagnosticCaptureRunning && !receiving)) {
+                                    Text(if (demoRunning) "Stop test tone" else "Start test tone")
+                                }
+                                if (diagnosticCaptureRunning || reception.state in setOf("Starting", "Receiving")) {
+                                    Text("Stop the active SDR stream before starting a generated tone.", color = OrbitColors.amber)
+                                }
+                                demoError?.let { Text(it, color = OrbitColors.red) }
+                            }
+                        }
+                        if (demoSnapshot != null) item { SignalVisuals(demoSnapshot!!) }
                     }
                 }
-                if (demoRunning && demoSnapshot != null) item {
-                    SignalVisuals(demoSnapshot!!)
-                }
-                item { Text("Receive only transmissions you are authorized to monitor.",
+                item { Text("Plots show captured IQ; they do not confirm a satellite signal or decoding.",
                     modifier = Modifier.padding(bottom = 20.dp), color = OrbitColors.muted,
                     style = MaterialTheme.typography.bodySmall) }
             }

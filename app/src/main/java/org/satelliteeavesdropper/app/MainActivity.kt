@@ -16,20 +16,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
-import org.satelliteeavesdropper.app.data.CatalogLoadResult
 import org.satelliteeavesdropper.app.data.CatalogRepository
-import org.satelliteeavesdropper.app.data.CatalogSource
 import org.satelliteeavesdropper.app.data.SatelliteRecord
 import org.satelliteeavesdropper.app.data.TransmitterRecord
-import org.satelliteeavesdropper.app.data.isFreshWithin72Hours
 import org.satelliteeavesdropper.app.data.verifyReceptionSelection
 import org.satelliteeavesdropper.app.receiver.ReceptionService
 import org.satelliteeavesdropper.app.receiver.ReceptionState
+import org.satelliteeavesdropper.app.receiver.ReceiverSessionCoordinator
+import org.satelliteeavesdropper.app.receiver.SdrTesterState
+import org.satelliteeavesdropper.app.receiver.SdrTestConfig
+import org.satelliteeavesdropper.app.receiver.NativeSdrTestBackend
+import org.satelliteeavesdropper.app.receiver.parseSdrTestFrequencyHz
+import org.satelliteeavesdropper.app.receiver.runSdrTest
 import org.satelliteeavesdropper.app.receiver.isUsableReceiveFix
 import org.satelliteeavesdropper.orbit.ObserverLocation
 import java.time.Instant
@@ -61,8 +65,14 @@ class MainActivity : ComponentActivity() {
     private var pendingReception: PendingReception? = null
     private var usbMessage by mutableStateOf<String?>(null)
     private var diagnosticDevices by mutableStateOf<List<UsbChoice>?>(null)
-    private var diagnosticMessage by mutableStateOf<String?>(null)
-    private var diagnosticCaptureRunning by mutableStateOf(false)
+    private var diagnosticMessage: String?
+        get() = SdrTesterState.message
+        set(value) { SdrTesterState.message = value }
+    private val diagnosticCaptureRunning get() = SdrTesterState.running
+    private val diagnosticSessions by lazy { ReceiverSessionCoordinator(lifecycleScope) }
+    private var diagnosticJob: Job? = null
+    private var receptionLaunchRunning = false
+    private var pendingDiagnosticFrequencyHz: Long? = null
     private var pendingDiagnosticDevice: UsbChoice? = null
     private val usbManager by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
 
@@ -70,16 +80,21 @@ class MainActivity : ComponentActivity() {
             if (intent.action == ACTION_USB_DIAGNOSTIC_PERMISSION) {
                 val pending = pendingDiagnosticDevice ?: return@usbPermissionCallback
                 pendingDiagnosticDevice = null
+                val frequencyHz = pendingDiagnosticFrequencyHz
+                pendingDiagnosticFrequencyHz = null
                 val returnedDevice = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                if (returnedDevice?.deviceName != pending.device.deviceName) {
+                if (returnedDevice?.deviceName != pending.device.deviceName ||
+                    returnedDevice.vendorId != pending.device.vendorId ||
+                    returnedDevice.productId != pending.device.productId) {
                     diagnosticMessage = "USB access result did not match the requested SDR. Scan again."
                     Log.w(TAG, "USB diagnostic permission result did not match ${pending.device.deviceName}")
                     return@usbPermissionCallback
                 }
                 val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) &&
                     usbManager.hasPermission(pending.device)
-                diagnosticMessage = "USB access ${if (granted) "granted" else "denied"} for ${pending.label}. Receiver not started."
+                diagnosticMessage = "USB access ${if (granted) "granted" else "denied"} for ${pending.label}."
                 Log.i(TAG, "USB diagnostic permission ${if (granted) "granted" else "denied"} for ${pending.device.deviceName}")
+                if (granted && frequencyHz != null) startDiagnosticTest(pending, frequencyHz)
                 return@usbPermissionCallback
             }
             if (intent.action != ACTION_USB_PERMISSION) return@usbPermissionCallback
@@ -106,9 +121,11 @@ class MainActivity : ComponentActivity() {
                     diagnosticDevices = diagnosticDevices,
                     diagnosticMessage = diagnosticMessage,
                     diagnosticCaptureRunning = diagnosticCaptureRunning,
+                    diagnosticSnapshot = SdrTesterState.snapshot,
                     scanUsbSdr = ::scanUsbSdr,
                     requestUsbAccess = ::requestDiagnosticUsbAccess,
                     captureUsbIq = ::captureDiagnosticUsbIq,
+                    stopUsbTest = ::stopDiagnosticTest,
                     startReception = ::requestReception,
                     stopReception = {
                         startService(Intent(this, ReceptionService::class.java).setAction(ReceptionService.ACTION_STOP))
@@ -119,7 +136,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        UsbPermissionReceiver.onResult = null
+        if (UsbPermissionReceiver.onResult === usbPermissionCallback) UsbPermissionReceiver.onResult = null
         super.onDestroy()
     }
 
@@ -131,6 +148,8 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         // The receiver may keep running in the foreground, but this activity no longer supplies GPS fixes.
         ReceptionState.setActivityVisible(false)
+        pendingDiagnosticFrequencyHz = null
+        stopDiagnosticTest()
         super.onStop()
     }
 
@@ -161,6 +180,7 @@ class MainActivity : ComponentActivity() {
         }
         val attached = usbManager.deviceList[choice.device.deviceName]
         if (attached == null) {
+            pendingDiagnosticFrequencyHz = null
             diagnosticMessage = "SDR disconnected. Scan USB SDR again."
             Log.i(TAG, "USB diagnostic device disconnected: ${choice.device.deviceName}")
             return
@@ -168,6 +188,9 @@ class MainActivity : ComponentActivity() {
         if (usbManager.hasPermission(attached)) {
             diagnosticMessage = "USB access already granted for ${choice.label}. Receiver not started."
             Log.i(TAG, "USB diagnostic permission already granted for ${choice.device.deviceName}")
+            val frequencyHz = pendingDiagnosticFrequencyHz
+            pendingDiagnosticFrequencyHz = null
+            if (frequencyHz != null) startDiagnosticTest(choice, frequencyHz)
             return
         }
         pendingDiagnosticDevice = choice
@@ -181,26 +204,40 @@ class MainActivity : ComponentActivity() {
             usbManager.requestPermission(attached, grant)
         } catch (error: Exception) {
             pendingDiagnosticDevice = null
+            pendingDiagnosticFrequencyHz = null
             diagnosticMessage = "Could not request USB access: ${error.message ?: error.javaClass.simpleName}"
             Log.e(TAG, "USB diagnostic permission request failed for ${choice.device.deviceName}", error)
         }
     }
 
-    private fun captureDiagnosticUsbIq(choice: UsbChoice, catalog: CatalogLoadResult?) {
+    private fun captureDiagnosticUsbIq(choice: UsbChoice, frequencyMHz: String) {
+        val frequencyHz = parseSdrTestFrequencyHz(frequencyMHz)
+        if (frequencyHz == null) {
+            diagnosticMessage = "Enter a test frequency from 1 to 6000 MHz. The SDR must support that frequency."
+            return
+        }
         if (diagnosticCaptureRunning) return
-        if (ReceptionState.snapshots.value.state in setOf("Starting", "Receiving")) {
-            diagnosticMessage = "Stop the current receiver before checking USB IQ."
+        if (pendingDiagnosticDevice != null) {
+            diagnosticMessage = "Wait for the current Android USB access decision."
             return
         }
-        val now = Instant.now()
-        if (catalog == null || catalog.source == CatalogSource.DEMO ||
-            !isFreshWithin72Hours(catalog.manifest.sourceUpdatedAt, now)) {
-            diagnosticMessage = "A current signed catalog is required for the USB IQ check."
+        if (!usbManager.hasPermission(choice.device)) {
+            pendingDiagnosticFrequencyHz = frequencyHz
+            requestDiagnosticUsbAccess(choice)
             return
         }
-        val tuning = selectUsbDiagnosticTuning(catalog, now)
-        if (tuning == null) {
-            diagnosticMessage = "No current curated public/amateur downlink is available for the USB IQ check."
+        startDiagnosticTest(choice, frequencyHz)
+    }
+
+    private fun startDiagnosticTest(choice: UsbChoice, frequencyHz: Long) {
+        if (diagnosticCaptureRunning) return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            diagnosticMessage = "Return to the app and start the SDR test again."
+            return
+        }
+        if (ReceptionState.snapshots.value.state in setOf("Starting", "Receiving") ||
+            pendingReception != null || receptionLaunchRunning) {
+            diagnosticMessage = "Stop the satellite receiver before testing the SDR."
             return
         }
         val attached = supportedUsbDevices().firstOrNull {
@@ -213,67 +250,42 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!usbManager.hasPermission(attached.device)) {
-            diagnosticMessage = "Request Android USB access before checking IQ samples."
+            diagnosticMessage = "Android USB access was not granted. Start the test again to request it."
             return
         }
-
-        val tx = tuning.transmitter
-        val sampleRate = tx.captureRateSps!!
-        diagnosticCaptureRunning = true
-        diagnosticMessage = "Checking USB IQ for 3 seconds at ${"%.6f".format(Locale.US, tx.frequencyHz / 1_000_000.0)} MHz…"
-        Log.i(TAG, "USB IQ check: device=${attached.device.deviceName}, satellite=${tuning.satellite.noradId}, " +
-            "frequencyHz=${tx.frequencyHz}, sampleRateSps=$sampleRate, decoder=off")
-        lifecycleScope.launch {
+        SdrTesterState.running = true
+        SdrTesterState.snapshot = null
+        diagnosticMessage = "Testing USB samples for 10 seconds at ${"%.6f".format(Locale.US, frequencyHz / 1_000_000.0)} MHz…"
+        diagnosticJob = diagnosticSessions.replace {
             try {
-                val stats = withContext(Dispatchers.IO) {
+                val result = withContext(Dispatchers.IO) {
                     val connection = usbManager.openDevice(attached.device)
                         ?: error("Could not open the granted USB device")
-                    var handle = 0L
-                    var finalStats = longArrayOf()
-                    try {
-                        handle = NativeReceiver.nativeCreate(sampleRate)
-                        check(handle != 0L) { "Could not create native receiver" }
-                        check(NativeReceiver.nativeSetMode(handle, 0) == 0) { "Could not select spectrum-only mode" }
-                        val openCode = NativeReceiver.nativeOpenUsb(handle, connection.fileDescriptor, attached.type)
-                        Log.i(TAG, "USB IQ check nativeOpenUsb=$openCode")
-                        check(openCode == 0) { "Could not open SDR receiver (code $openCode)" }
-                        val startCode = NativeReceiver.nativeStartRx(handle, tx.frequencyHz)
-                        Log.i(TAG, "USB IQ check nativeStartRx=$startCode")
-                        check(startCode == 0) { "Could not start SDR stream (code $startCode)" }
-                        delay(3_000)
-                    } finally {
-                        if (handle != 0L) {
-                            finalStats = runCatching { NativeReceiver.nativeStats(handle) }
-                                .getOrElse { error ->
-                                    Log.e(TAG, "USB IQ check stats failed", error)
-                                    longArrayOf()
-                                }
-                            Log.i(TAG, "USB IQ check final complex samples: accepted=${finalStats.getOrElse(0) { 0 }}, " +
-                                "dropped=${finalStats.getOrElse(1) { 0 }}, processed=${finalStats.getOrElse(2) { 0 }}")
-                            runCatching { NativeReceiver.nativeStopRx(handle) }
-                                .onFailure { Log.e(TAG, "USB IQ check stop failed", it) }
-                            runCatching { NativeReceiver.nativeDestroy(handle) }
-                                .onFailure { Log.e(TAG, "USB IQ check destroy failed", it) }
-                        }
-                        connection.close()
-                    }
-                    finalStats
+                    val backend = NativeSdrTestBackend(connection.fileDescriptor, attached.type) { connection.close() }
+                    runSdrTest(backend, SdrTestConfig(deviceLabel = attached.label, frequencyHz = frequencyHz),
+                        publish = { SdrTesterState.snapshot = it })
                 }
-                val accepted = stats.getOrElse(0) { 0 }
-                val dropped = stats.getOrElse(1) { 0 }
-                val processed = stats.getOrElse(2) { 0 }
-                diagnosticMessage = "USB IQ check: $accepted accepted, $dropped dropped, $processed processed complex samples. " +
-                    if (accepted > 0) "USB samples arrived; decoding was not tested." else "Failed: no USB samples arrived."
+                diagnosticMessage = result.summary
             } catch (error: CancellationException) {
-                Log.i(TAG, "USB IQ check cancelled")
+                diagnosticMessage = "SDR test stopped. Last samples are retained; no current stream is implied."
                 throw error
-            } catch (error: Throwable) {
-                diagnosticMessage = "USB IQ check failed: ${error.message ?: error.javaClass.simpleName}"
-                Log.e(TAG, "USB IQ check failed", error)
-            } finally {
-                diagnosticCaptureRunning = false
+            } catch (error: Exception) {
+                diagnosticMessage = "SDR test failed: ${error.message ?: error.javaClass.simpleName}"
+                Log.e(TAG, "SDR test failed", error)
+            }
+        }.also { job ->
+            job.invokeOnCompletion { cause ->
+                if (cause is CancellationException) {
+                    SdrTesterState.snapshot = SdrTesterState.snapshot?.copy(state = "Test stopped")
+                    diagnosticMessage = "SDR test stopped. Last samples are retained; no current stream is implied."
+                }
+                SdrTesterState.running = false
             }
         }
+    }
+
+    private fun stopDiagnosticTest() {
+        diagnosticJob?.cancel()
     }
 
     private fun requestReception(
@@ -285,7 +297,7 @@ class MainActivity : ComponentActivity() {
         initialFixElapsedMs: Long?,
     ) {
         if (diagnosticCaptureRunning) {
-            usbMessage = "Wait for the USB IQ check to finish before receiving."
+            usbMessage = "Stop the SDR test before starting satellite reception."
             return
         }
         if (!transmitter.mayReceive || transmitter.frequencyHz <= 0 || transmitter.captureRateSps == null ||
@@ -313,6 +325,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchReception(pending: PendingReception) {
+        if (diagnosticCaptureRunning) {
+            usbMessage = "Stop the SDR test before starting satellite reception."
+            return
+        }
+        receptionLaunchRunning = true
         lifecycleScope.launch {
             try {
                 require(!pending.automaticObserver ||
@@ -349,12 +366,15 @@ class MainActivity : ComponentActivity() {
                         putExtra(ReceptionService.EXTRA_INITIAL_FIX_ELAPSED_MS, it)
                     }
                 }
+                require(!diagnosticCaptureRunning) { "Stop the SDR test before starting satellite reception." }
                 startForegroundService(request)
                 usbMessage = "Starting ${pending.choice.label}"
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 usbMessage = error.message ?: "Could not start USB receiver"
+            } finally {
+                receptionLaunchRunning = false
             }
         }
     }

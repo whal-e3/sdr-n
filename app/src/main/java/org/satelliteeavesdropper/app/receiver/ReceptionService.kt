@@ -45,6 +45,8 @@ data class ReceptionSnapshot(
     val acceptedSamples: Long = 0,
     val droppedSamples: Long = 0,
     val processedSamples: Long = 0,
+    /** Monotonic time when the displayed IQ last advanced, not when status was refreshed. */
+    val samplesUpdatedAtElapsedMs: Long? = null,
     val sampleRateSps: Int = 0,
     val targetNoradId: String = "",
     val targetName: String = "",
@@ -280,6 +282,7 @@ class ReceptionService : Service() {
                 var nextDisplayAt = 0L
                 var lastAccepted = 0L
                 var lastProcessed = 0L
+                var samplesUpdatedAtElapsedMs: Long? = null
                 var lastProgressAt = SystemClock.elapsedRealtime()
                 var audioFramesPlayed = 0L
                 while (isActive) {
@@ -315,6 +318,7 @@ class ReceptionService : Service() {
                             waterfall.addLast(List(128) { bin -> maxOf(bins[2 * bin], bins[2 * bin + 1]) })
                             while (waterfall.size > 48) waterfall.removeFirst()
                         }
+                        if (processed > lastProcessed) samplesUpdatedAtElapsedMs = now
                         lastAccepted = accepted
                         lastProcessed = processed
                         ReceptionState.publish(
@@ -328,6 +332,7 @@ class ReceptionService : Service() {
                                 acceptedSamples = accepted,
                                 droppedSamples = stats.getOrElse(1) { 0 },
                                 processedSamples = processed,
+                                samplesUpdatedAtElapsedMs = samplesUpdatedAtElapsedMs,
                                 sampleRateSps = sampleRate,
                                 targetNoradId = targetNoradId,
                                 targetName = targetName,
@@ -350,7 +355,7 @@ class ReceptionService : Service() {
                                 packets = packets.toList(),
                             ),
                         )
-                        nextDisplayAt = now + 400
+                        nextDisplayAt = now + 100
                     }
                     if (pcm != null) {
                         val count = NativeReceiver.nativeReadAudio(handle, pcm, pcm.size)

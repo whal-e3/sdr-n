@@ -1,5 +1,6 @@
 package org.satelliteeavesdropper.app.receiver
 
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -13,18 +14,33 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.Locale
 import kotlin.math.min
 
@@ -34,23 +50,91 @@ private const val IQ_POINTS = 256
 private val iqColor = Color(0xFF67DDD7)
 private val qColor = Color(0xFFFFC979)
 
+private enum class SignalRepresentation(val label: String) {
+    SPECTRUM("Spectrum"), WATERFALL("Waterfall"), WAVEFORM("IQ waveform"),
+    CONSTELLATION("Constellation"), OVERVIEW("Overview"),
+}
+
 /** Actual receiver samples and DSP output. A trace or IQ scatter does not indicate packet lock. */
 @Composable
 fun SignalVisuals(snapshot: ReceptionSnapshot) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (snapshot.state == "Stopped") {
-            Text(
-                "Session ended. These are the last captured samples and decoder counts; " +
-                    "no current signal or frame sync is implied.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
+    var representation by rememberSaveable { mutableStateOf(SignalRepresentation.SPECTRUM) }
+    var clockElapsedMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    val lifecycle = (LocalContext.current as? LifecycleOwner)?.lifecycle
+    LaunchedEffect(lifecycle, snapshot.sessionId, snapshot.hasActiveVisualSession()) {
+        if (!snapshot.hasActiveVisualSession()) return@LaunchedEffect
+        suspend fun tick() {
+            while (isActive) {
+                clockElapsedMs = SystemClock.elapsedRealtime()
+                delay(250)
+            }
         }
-        ReceiverChain(snapshot)
-        FrequencyTrace(snapshot)
-        Spectrogram(snapshot)
-        TimeDomainTrace(snapshot)
-        IqScatter(snapshot)
+        if (lifecycle != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { tick() }
+        else tick()
+    }
+    val nowElapsedMs = maxOf(clockElapsedMs, SystemClock.elapsedRealtime())
+    val freshness = signalVisualFreshness(snapshot, nowElapsedMs)
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        ScrollableTabRow(selectedTabIndex = representation.ordinal, edgePadding = 0.dp) {
+            SignalRepresentation.entries.forEach { tab ->
+                Tab(
+                    selected = representation == tab,
+                    onClick = { representation = tab },
+                    text = { Text(tab.label) },
+                )
+            }
+        }
+        SignalProgress(snapshot, freshness, nowElapsedMs)
+        // Compose only the selected representation; every trace uses new receiver snapshots.
+        when (representation) {
+            SignalRepresentation.SPECTRUM -> FrequencyTrace(snapshot)
+            SignalRepresentation.WATERFALL -> Spectrogram(snapshot)
+            SignalRepresentation.WAVEFORM -> TimeDomainTrace(snapshot)
+            SignalRepresentation.CONSTELLATION -> IqScatter(snapshot)
+            SignalRepresentation.OVERVIEW -> ReceiverChain(snapshot)
+        }
+    }
+}
+
+@Composable
+private fun SignalProgress(snapshot: ReceptionSnapshot, freshness: SignalVisualFreshness, nowElapsedMs: Long) {
+    val source = when {
+        snapshot.isSyntheticVisualSession() -> "Generated test tone"
+        snapshot.isSdrTestVisualSession() -> "USB SDR test"
+        else -> "Receiver IQ"
+    }
+    val headline = when (freshness) {
+        SignalVisualFreshness.LIVE -> "LIVE · $source"
+        SignalVisualFreshness.WAITING -> "WAITING · $source"
+        SignalVisualFreshness.STALE -> "STALE · $source"
+        SignalVisualFreshness.STOPPED -> "STOPPED · $source"
+        SignalVisualFreshness.FAILED -> "FAILED · $source"
+    }
+    val updatedAt = snapshot.samplesUpdatedAtElapsedMs
+    val age = updatedAt?.takeIf { it >= 0L && it <= nowElapsedMs }
+        ?.let { "%.1f s".format(Locale.US, (nowElapsedMs - it) / 1_000.0) }
+    val detail = when (freshness) {
+        SignalVisualFreshness.LIVE ->
+            "Samples updated $age ago · ${formatCount(snapshot.processedSamples)} complex samples processed"
+        SignalVisualFreshness.WAITING -> "Waiting for IQ samples; a plot appears when samples arrive."
+        SignalVisualFreshness.STALE -> if (age != null)
+            "Samples have not advanced for $age. Showing the last captured samples." else
+            "Current sample delivery is unverified. Showing the last captured samples."
+        SignalVisualFreshness.STOPPED ->
+            "Session ended. Showing the last captured samples; no current signal or frame sync is implied."
+        SignalVisualFreshness.FAILED -> if (snapshot.processedSamples > 0L)
+            "Capture failed. Showing the last captured samples; no current signal is implied." else
+            "Capture failed before IQ samples arrived."
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(headline, fontWeight = FontWeight.Bold, color = when (freshness) {
+            SignalVisualFreshness.LIVE -> MaterialTheme.colorScheme.primary
+            SignalVisualFreshness.STALE -> MaterialTheme.colorScheme.secondary
+            SignalVisualFreshness.FAILED -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }, style = MaterialTheme.typography.labelLarge)
+        Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -58,13 +142,15 @@ fun SignalVisuals(snapshot: ReceptionSnapshot) {
 private fun ReceiverChain(snapshot: ReceptionSnapshot) {
     SignalCard("RECEIVER CHAIN", "Predictions and measurements are shown separately") {
         Stage(
-            "01", "Orbit target",
-            if (snapshot.state == "Synthetic preview") "Synthetic test tone · no satellite" else
+            "01", if (snapshot.isSdrTestVisualSession() || snapshot.isSyntheticVisualSession()) "Sample source" else "Orbit target",
+            if (snapshot.isSyntheticVisualSession()) "Synthetic test tone · no satellite" else
+            if (snapshot.isSdrTestVisualSession()) "SDR hardware test · no satellite" else
             if (snapshot.targetName.isBlank()) "No target selected" else
                 "${snapshot.targetName} · NORAD ${snapshot.targetNoradId}",
             orbitTargetDetail(snapshot),
         )
-        if (snapshot.state != "Stopped" && snapshot.lookElevationDegrees?.let { it < 0.0 } == true) {
+        if (!snapshot.isEndedVisualSession() && !snapshot.isSdrTestVisualSession() &&
+            snapshot.lookElevationDegrees?.let { it < 0.0 } == true) {
             Text("Target is below the predicted horizon. Stop and select a visible pass to continue.",
                 color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodySmall)
         }
@@ -77,7 +163,7 @@ private fun ReceiverChain(snapshot: ReceptionSnapshot) {
             when {
                 snapshot.processedSamples > 0 -> "${formatCount(snapshot.processedSamples)} complex samples processed"
                 snapshot.state == "Starting" -> "Waiting for SDR samples"
-                snapshot.state == "Stopped" -> "No IQ samples captured"
+                snapshot.isEndedVisualSession() -> "No IQ samples captured"
                 else -> "No samples yet"
             },
             "${formatCount(snapshot.acceptedSamples)} accepted · ${formatCount(snapshot.droppedSamples)} dropped",
@@ -91,8 +177,10 @@ private fun ReceiverChain(snapshot: ReceptionSnapshot) {
 }
 
 internal fun orbitTargetDetail(snapshot: ReceptionSnapshot): String {
-    if (snapshot.state == "Synthetic preview")
-        return "Generated locally at 32 kHz; no pass or downlink involved"
+    if (snapshot.isSyntheticVisualSession())
+        return "Generated locally; no pass or downlink involved"
+    if (snapshot.isSdrTestVisualSession())
+        return "Receive-only hardware check; no satellite, location or pass prediction required"
     val look = when {
         snapshot.lookElevationDegrees == null && snapshot.state == "Stopped" ->
             "No orbital prediction captured in last session"
@@ -125,7 +213,11 @@ internal fun observerFeedDescription(snapshot: ReceptionSnapshot): String {
 }
 
 internal fun tuningHeadline(snapshot: ReceptionSnapshot): String = when {
-    snapshot.state == "Synthetic preview" -> "No RF tuner · generated baseband IQ"
+    snapshot.isSyntheticVisualSession() -> "No RF tuner · generated baseband IQ"
+    snapshot.isSdrTestVisualSession() && snapshot.isEndedVisualSession() && snapshot.rfCenterHz <= 0 ->
+        "RF tuning unavailable in last test"
+    snapshot.isSdrTestVisualSession() && snapshot.isEndedVisualSession() && snapshot.rfCenterHz > 0 ->
+        "Last RF tuning ${mhz(snapshot.rfCenterHz.toDouble())} MHz"
     snapshot.rfCenterHz <= 0 && snapshot.state == "Stopped" -> "RF tuning unavailable in last session"
     snapshot.rfCenterHz <= 0 -> "RF tuner idle"
     snapshot.state == "Stopped" -> "Last RF tuning ${mhz(snapshot.rfCenterHz.toDouble())} MHz"
@@ -133,7 +225,8 @@ internal fun tuningHeadline(snapshot: ReceptionSnapshot): String = when {
 }
 
 internal fun tuningDetail(snapshot: ReceptionSnapshot): String = when {
-    snapshot.state == "Synthetic preview" -> "No orbital Doppler correction or radio signal"
+    snapshot.isSyntheticVisualSession() -> "No orbital Doppler correction or radio signal"
+    snapshot.isSdrTestVisualSession() -> "Fixed test frequency · no orbital Doppler correction"
     snapshot.rfCenterHz <= 0 && snapshot.state == "Stopped" -> "No Doppler tuning captured"
     snapshot.rfCenterHz <= 0 -> "Doppler correction pending"
     snapshot.state == "Stopped" ->
@@ -145,7 +238,8 @@ internal fun tuningDetail(snapshot: ReceptionSnapshot): String = when {
 }
 
 internal fun acquisitionHeadline(snapshot: ReceptionSnapshot): String = when {
-    snapshot.state == "Synthetic preview" -> "No RF signal acquisition"
+    snapshot.isSyntheticVisualSession() -> "No RF signal acquisition"
+    snapshot.isSdrTestVisualSession() -> "Hardware sample check · no satellite acquisition"
     snapshot.decoderId !in setOf("AUDIO_NFM", "AX25_AFSK1200") -> "Carrier acquisition not configured"
     snapshot.state == "Stopped" && snapshot.afcTracking -> "Last session · FM component estimate"
     snapshot.state == "Stopped" -> "Last session · no FM estimate"
@@ -155,7 +249,9 @@ internal fun acquisitionHeadline(snapshot: ReceptionSnapshot): String = when {
 }
 
 internal fun acquisitionDetail(snapshot: ReceptionSnapshot): String = when {
-    snapshot.state == "Synthetic preview" -> "Generated IQ only; no carrier or satellite signal"
+    snapshot.isSyntheticVisualSession() -> "Generated IQ only; no carrier or satellite signal"
+    snapshot.isSdrTestVisualSession() ->
+        "Advancing IQ checks USB capture; noise or a spectrum peak does not verify satellite reception"
     snapshot.decoderId !in setOf("AUDIO_NFM", "AX25_AFSK1200") ->
         "Spectrum processing does not check for a satellite signal or packet sync"
     else -> afcDescription(snapshot)
@@ -273,7 +369,7 @@ private fun FrequencyTrace(snapshot: ReceptionSnapshot) {
             return@SignalCard
         }
         val grid = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
-        Canvas(Modifier.fillMaxWidth().height(146.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(240.dp)) {
             for (step in 0..4) {
                 val x = size.width * step / 4f
                 val y = size.height * step / 4f
@@ -297,13 +393,13 @@ private fun FrequencyTrace(snapshot: ReceptionSnapshot) {
 @Composable
 private fun Spectrogram(snapshot: ReceptionSnapshot) {
     val rows = snapshot.spectrogram
-    SignalCard("SPECTROGRAM", "Rolling FFT history · newest at bottom") {
+    SignalCard("WATERFALL", "Rolling FFT history · newest at bottom") {
         if (rows.isEmpty()) {
             EmptyPlot(snapshot)
             return@SignalCard
         }
         val background = MaterialTheme.colorScheme.surfaceVariant
-        Canvas(Modifier.fillMaxWidth().height(166.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(260.dp)) {
             drawRect(background)
             val rowHeight = size.height / 48f
             val colWidth = size.width / WATERFALL_BINS
@@ -319,7 +415,7 @@ private fun Spectrogram(snapshot: ReceptionSnapshot) {
             }
         }
         FrequencyAxis(snapshot)
-        Text("One row per 0.4 s display update while samples advance",
+        Text("A new row is added only when captured sample counts advance",
             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
         Text("Dark: low power · amber: high power",
             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
@@ -341,7 +437,7 @@ private fun TimeDomainTrace(snapshot: ReceptionSnapshot) {
             return@SignalCard
         }
         val grid = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
-        Canvas(Modifier.fillMaxWidth().height(142.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(240.dp)) {
             drawLine(grid, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 1f)
             for (step in 1..3) {
                 val x = size.width * step / 4f
@@ -395,7 +491,7 @@ private fun IqScatter(snapshot: ReceptionSnapshot) {
             return@SignalCard
         }
         val grid = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
-        Canvas(Modifier.fillMaxWidth().height(196.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(280.dp)) {
             val radius = min(size.width, size.height) * 0.43f
             val center = Offset(size.width / 2f, size.height / 2f)
             drawCircle(grid, radius, center, style = Stroke(width = 1f))
@@ -433,7 +529,11 @@ private fun SignalCard(title: String, subtitle: String, content: @Composable Col
 
 @Composable
 private fun EmptyPlot(snapshot: ReceptionSnapshot) {
-    Text(if (snapshot.state == "Stopped") "No graph data captured in this session" else "Waiting for live IQ samples",
+    Text(when {
+        !snapshot.error.isNullOrBlank() || snapshot.state == "Failed" -> "No graph data captured before failure"
+        snapshot.isEndedVisualSession() -> "No graph data captured in this session"
+        else -> "Waiting for live IQ samples"
+    },
         modifier = Modifier.fillMaxWidth().height(80.dp),
         color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodyMedium)
@@ -455,17 +555,23 @@ private fun FrequencyAxis(snapshot: ReceptionSnapshot) {
     val halfRate = snapshot.sampleRateSps / 2.0
     if (snapshot.rfCenterHz <= 0) {
         AxisRow("${(-halfRate / 1000).toInt()} kHz", "0", "+${(halfRate / 1000).toInt()} kHz")
-        Text("Baseband offset · no RF tuning in synthetic preview",
+        Text(if (snapshot.isSyntheticVisualSession()) "Baseband offset · no RF tuning in generated test tone" else
+            "Baseband offset · RF center unavailable",
             color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
     } else {
-        val correctedCenterHz = snapshot.displayCenterHz + snapshot.afcAppliedHz
+        val correctedCenterHz = if (snapshot.isSdrTestVisualSession()) snapshot.rfCenterHz.toDouble() else
+            snapshot.displayCenterHz + snapshot.afcAppliedHz
         AxisRow(
             mhz(correctedCenterHz - halfRate),
             mhz(correctedCenterHz),
             mhz(correctedCenterHz + halfRate),
         )
-        Text(if (snapshot.state == "Stopped") "MHz · last corrected baseband center" else
-            "MHz · corrected baseband center", color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Text(when {
+            snapshot.isSdrTestVisualSession() && snapshot.isEndedVisualSession() -> "MHz · last RF test center"
+            snapshot.isSdrTestVisualSession() -> "MHz · fixed RF test center"
+            snapshot.isEndedVisualSession() -> "MHz · last corrected baseband center"
+            else -> "MHz · corrected baseband center"
+        }, color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.labelSmall)
     }
 }
