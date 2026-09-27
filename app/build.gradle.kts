@@ -4,6 +4,19 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val uploadSigningValues = listOf(
+    "ORBIT_UPLOAD_KEYSTORE", "ORBIT_UPLOAD_KEY_ALIAS",
+    "ORBIT_UPLOAD_STORE_PASSWORD", "ORBIT_UPLOAD_KEY_PASSWORD",
+).associateWith { providers.environmentVariable(it).orNull }
+val hasUploadSigning = uploadSigningValues.values.any { it != null }
+if (hasUploadSigning) {
+    val missing = uploadSigningValues.filterValues { it.isNullOrBlank() }.keys
+    require(missing.isEmpty()) { "Missing upload signing environment variables: ${missing.joinToString()}" }
+    require(file(uploadSigningValues.getValue("ORBIT_UPLOAD_KEYSTORE")!!).isFile) {
+        "Upload keystore file does not exist"
+    }
+}
+
 android {
     namespace = "org.satelliteeavesdropper.app"
     compileSdk = 36
@@ -31,6 +44,22 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    signingConfigs {
+        if (hasUploadSigning) {
+            create("upload") {
+                storeFile = file(uploadSigningValues.getValue("ORBIT_UPLOAD_KEYSTORE")!!)
+                keyAlias = uploadSigningValues.getValue("ORBIT_UPLOAD_KEY_ALIAS")
+                storePassword = uploadSigningValues.getValue("ORBIT_UPLOAD_STORE_PASSWORD")
+                keyPassword = uploadSigningValues.getValue("ORBIT_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            if (hasUploadSigning) signingConfig = signingConfigs.getByName("upload")
+        }
     }
 
     compileOptions {
@@ -64,6 +93,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.orekit:orekit:12.1.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")

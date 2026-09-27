@@ -31,13 +31,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -60,7 +59,7 @@ private enum class SignalRepresentation(val label: String) {
 fun SignalVisuals(snapshot: ReceptionSnapshot) {
     var representation by rememberSaveable { mutableStateOf(SignalRepresentation.SPECTRUM) }
     var clockElapsedMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    val lifecycle = (LocalContext.current as? LifecycleOwner)?.lifecycle
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle, snapshot.sessionId, snapshot.hasActiveVisualSession()) {
         if (!snapshot.hasActiveVisualSession()) return@LaunchedEffect
         suspend fun tick() {
@@ -69,8 +68,7 @@ fun SignalVisuals(snapshot: ReceptionSnapshot) {
                 delay(250)
             }
         }
-        if (lifecycle != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { tick() }
-        else tick()
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { tick() }
     }
     val nowElapsedMs = maxOf(clockElapsedMs, SystemClock.elapsedRealtime())
     val freshness = signalVisualFreshness(snapshot, nowElapsedMs)

@@ -46,7 +46,9 @@ if(ANDROID)
                                     hackrf_driver.cpp)
     target_compile_definitions(satellite_rx PRIVATE rtlsdr_STATIC)
     target_link_options(satellite_rx PRIVATE -Wl,--gc-sections
-                                             -Wl,--exclude-libs,ALL)
+                                             -Wl,--exclude-libs,ALL
+                                             -Wl,-z,max-page-size=16384
+                                             -Wl,-z,common-page-size=16384)
     target_link_libraries(satellite_rx PRIVATE satellite_rx_core rtlsdr_vendor
                                                hackrf_vendor log)
     add_custom_command(TARGET satellite_rx POST_BUILD

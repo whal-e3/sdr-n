@@ -32,15 +32,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import org.satelliteeavesdropper.app.MainActivity
 import org.satelliteeavesdropper.app.dayPassStatus
 import org.satelliteeavesdropper.app.dayPredictionStopsAtDecay
 import org.satelliteeavesdropper.app.orbitHistoryLabel
@@ -74,11 +73,11 @@ internal fun DayScheduleScreen(
     importMessage: String? = null,
     importedCount: Int = 0,
 ) {
-    val lifecycle = (LocalContext.current as MainActivity).lifecycle
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     var today by remember { mutableStateOf(LocalDate.now()) }
     var zone by remember { mutableStateOf(ZoneId.systemDefault()) }
     var now by remember { mutableStateOf(Instant.now()) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 zone = ZoneId.systemDefault()

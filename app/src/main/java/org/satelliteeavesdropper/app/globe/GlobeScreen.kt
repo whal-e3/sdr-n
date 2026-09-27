@@ -30,13 +30,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +45,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import org.satelliteeavesdropper.app.MainActivity
 import org.satelliteeavesdropper.app.OrbitColors
 import org.satelliteeavesdropper.app.data.CatalogLoadResult
 import org.satelliteeavesdropper.app.data.CatalogSource
@@ -71,7 +70,7 @@ internal fun GlobeScreen(
     onTrack: (SatelliteRecord) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val lifecycle = (LocalContext.current as MainActivity).lifecycle
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val records = catalog?.manifest?.satellites.orEmpty()
     var query by rememberSaveable { mutableStateOf("") }
     var radioProfilesOnly by rememberSaveable { mutableStateOf(true) }
