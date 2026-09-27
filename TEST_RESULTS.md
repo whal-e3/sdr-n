@@ -195,3 +195,21 @@ Installed APK SHA-256: `bafdc5a9177143aa6c481d3bd32a3cd5f9b04d21383e62e5007003e0
 | Real satellite signal/decoding | Not testable | No RF pass was exercised. Raw I/Q scatter, a spectrum and a tester pass establish neither satellite identity nor decoding. |
 
 Evidence is saved outside the repository under `%LOCALAPPDATA%\satellite-catalog-releases\release-20260926-spacetrack-v2\validation\live-signal-tabs`: build output, JVM summary, instrumentation output, UI snapshots and screenshots. The signing key and signed cache remain unchanged; no catalog service was deployed.
+
+## Physical RTL-SDR tester over wireless ADB — September 27
+
+Follow-up on the same Galaxy A30 SM-A305N, Android 11, arm64-v8a, using the previously installed debug build. The user attached the RTL-SDR (`0bda:2838`, Realtek RTL2838UHIDIR) with a monopole antenna through OTG. ADB remained connected over Wi-Fi after the computer cable was removed. Android reported USB host mode with the phone supplying power. These checks used the independent, receive-only SDR tester with decoding disabled.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| Wireless ADB and USB detection | Passed | The phone remained reachable at `192.168.0.15:5555` while hosting the SDR. Android and the app each found one RTL-SDR. |
+| USB permission denial and retry | Passed | Canceling Android's USB access dialog produced an explicit denied status without starting capture. Retrying and granting access automatically started the foreground test. |
+| Ten-second capture at 100 MHz | Passed | 10,223,616 complex samples accepted and processed, zero drops; measured 1,022,055 samples/s. The tester reported a pass without flat/clipped-IQ or rate warnings. |
+| Repeat capture at 145.800 MHz | Passed | 10,223,616 accepted, 10,215,424 processed, zero drops; measured 1,021,134 samples/s. Reopening the driver after the first completed test worked. These counts are the final polled snapshot, not a claim that all accepted samples were drained after stopping. |
+| Live physical-IQ spectrum and stopped state | Passed | At 145.800 MHz, the live UI snapshot showed 3,555,328 processed samples with age 0.0 s; the following screenshot showed 5,242,880 and a live spectrum. Completion changed the label to STOPPED and retained the last capture. This does not identify a satellite or establish decoding. |
+| Manual Stop and resource release | Passed | A third capture was stopped early through the UI. The app reported that no current stream remained; the app process had no open `/dev/bus/usb/` file descriptors after cleanup. |
+| Logs | Passed | App PID 13014 remained unchanged. The 214 app log lines from the capture window contained no fatal exception, native fatal signal, OOM, JNI failure, ANR indication, or matching RTL/libusb failure. The crash buffer was unchanged. |
+| ISS repeater voice reception | Not testable | The signed sequence-2 catalog's 437.800 MHz FM repeater entry (`eozSf5mKyzNxoascs8V4bV`) is restricted with `decoderId: null`; its 145.800 MHz crew-voice entry is configured for NFM. No actual ISS voice or packet decoding was attempted or established. The repeater profile needs a reviewed, signed catalog update before an on-pass voice test. |
+| Antenna/RF sensitivity, unplug during capture, HackRF | Not testable | Sample progress alone cannot verify antenna performance or RF sensitivity. The user did not detach the SDR during a running test, and no HackRF One was supplied. |
+
+Evidence is saved outside the repository under `%LOCALAPPDATA%\satellite-catalog-releases\release-20260926-spacetrack-v2\validation\rtl-wireless`: USB state, permission/UI snapshots, live and stopped screenshots, catalog voice-entry summary, post-stop file descriptors and log review. The SDR tester was left stopped. No app code or signed catalog was changed, and no service was deployed. The existing 177 JVM and nine phone tests apply to this same build; they were not rerun for this hardware-only follow-up.
