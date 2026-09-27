@@ -155,7 +155,11 @@ class AutomaticLocationInstrumentedTest {
             val rendered = withTimeoutOrNull(10_000) {
                 while (!hasVisibleText(instrumentation.uiAutomation.rootInActiveWindow,
                         "35.12345°, 128.54321°") ||
-                    !hasVisibleText(instrumentation.uiAutomation.rootInActiveWindow, "Automatic · gps")) {
+                    // Modern Android may forward the injected GPS fix through
+                    // fused to the UI's independent subscription. Coordinates
+                    // must still match exactly; either registered source is valid.
+                    !(hasVisibleText(instrumentation.uiAutomation.rootInActiveWindow, "Automatic · gps") ||
+                      hasVisibleText(instrumentation.uiAutomation.rootInActiveWindow, "Automatic · fused"))) {
                     delay(200)
                 }
                 true

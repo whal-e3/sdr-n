@@ -23,7 +23,7 @@ android {
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "org.satelliteeavesdropper.app"
+        applicationId = "io.github.whal_e3.orbitscope"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
@@ -57,6 +57,9 @@ android {
         }
     }
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+        }
         getByName("release") {
             if (hasUploadSigning) signingConfig = signingConfigs.getByName("upload")
         }
@@ -80,6 +83,9 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
+            // The app's CMake output precedes the matching Maven prebuilt.
+            // tools/check_release.py verifies the packaged copy's alignment.
+            pickFirsts += "**/libandroidx.graphics.path.so"
         }
     }
 }
@@ -89,6 +95,10 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.09.01")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.10.1")
+    // The vendored JNI implementation must match this Kotlin/Java API version.
+    implementation("androidx.graphics:graphics-path:1.0.1") {
+        version { strictly("1.0.1") }
+    }
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

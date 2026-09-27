@@ -234,3 +234,44 @@ Prepared an unsigned release AAB/APK, optional environment-based upload signing,
 | Store submission and new-user reception | Not testable | Play Console account/access, permanent signing identity, final store/privacy details and binary license materials are not ready. A catalog endpoint is still undeployed/unconfigured, and the current ISS repeater profile remains disabled. These are recorded in `docs/release/PUBLISHING.md`. |
 
 Evidence is outside the repository in `%LOCALAPPDATA%\satellite-catalog-releases\release-20260926-spacetrack-v2\validation\publishing`: baseline/final build output, lint, bundle manifest/config, per-library ELF review, ZIP alignment, signing guard check, phone tests/UI/logs and saved-data hashes. The unsigned release artifacts remain under `app/build/outputs/` and are not committed.
+
+
+## September 27, 2026: signed preview and registration preparation
+
+This section supersedes the earlier unsigned-release/signing/alignment blockers.
+The release ID is now `io.github.whal_e3.orbitscope`; debug uses `.debug`.
+It installs separately from the original development app, whose private catalog
+and settings were retained. No catalog endpoint or public store release was deployed.
+
+Device: Samsung Galaxy A30 SM-A305N, Android 11, arm64-v8a, USB host/OTG;
+RTL2838UHIDIR (`0bda:2838`) with the user's monopole antenna. ADB used Wi-Fi
+while the SDR occupied the phone's USB-C port. Modern checks used an API 36
+x86_64 emulator reporting Android 16 and `PAGE_SIZE=16384`.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| Signed release build | Passed | Persistent private RSA-4096 upload key, signed APK/AAB; public certificate and backup instructions prepared. Private credentials remain outside Git. |
+| Release identity / fresh launch | Passed | New ID launches separately with the historical demo and reception gate. Original development data is not migrated or erased. |
+| Native alignment | Passed | Rebuilt matching AndroidX graphics-path 1.0.1 JNI source with both 16 KB linker flags. Both ABIs' packaged copies match CMake output; all four shared libraries pass LOAD/RELRO checks. Bundle configuration uses PAGE_ALIGNMENT_16K; APK ZIP alignment passed. |
+| JNI graphics and curves | Passed | New instrumented test explicitly loads the rebuilt library and checks curves on Android 11 arm64 and Android 16 / 16 KB x86_64. Modern PathIterator may also use platform facilities. |
+| JVM regression suite | Passed | 177 tests, 34 suites; no failures/errors/skips. |
+| Native host tests | Passed | All three receiver/NFM/AX.25 CTest tests. These use synthetic signals. |
+| Catalog service checks | Passed | 37 local tests and TypeScript check; no live service deployment. |
+| Final Android 11 instrumentation | Passed | Eight passed; three signed-cache benchmarks not testable on this fresh debug installation (runner reports 11 tests including assumptions). 24.843 seconds. |
+| Final Android 16 instrumentation | Passed | Eight passed; the same three cache benchmarks not testable. 34.280 seconds. Mock GPS coordinates and nearby movement passed after accepting Android's fused-provider UI label as well as GPS. |
+| Android 16 header overlap | Failed, then fixed / passed | Actual status-bar overlap prevented tapping About. Added safe top/horizontal insets; real-tap regression and signed-release manual About/privacy checks passed on both devices. About documents/list also scroll within the dialog. |
+| Launch/location denial and manual location | Passed | Signed preview permission denial leaves manual location available. Yongin coordinates persisted across a signed update. Real outdoor provider accuracy remains unverified. |
+| About/privacy/license access | Passed | Offline text is readable without USB/location. Policy is still a draft pending owner's name/contact/public final URL; this is not a completed store privacy declaration. |
+| Signed preview tone/spectrum | Passed | Live synthetic samples/spectrum and Stop-retained evidence on Android 16 / 16 KB; actual physical-phone captures of spectrum/waterfall. Synthetic plots are explicitly labeled and are not decoding evidence. |
+| Signed preview RTL-SDR | Passed | Detected USB dongle, requested/granted permission, completed ten-second 100 MHz capture: 10,223,616 accepted/processed, zero drops, 1,022,055 samples/s. No satellite signal required; decoder Off. |
+| Store/source materials | Passed | 512×512 32-bit icon, 1024×500 feature graphic, real screenshots, listing/declaration/registration/signing notes, 69-dependency inventory and notice texts, all 69 matching Maven source archives, source/relink packaging scripts. |
+| App failures in logcat | Passed | No OrbitScope entries in either crash buffer. Emulator first boot had system-level death/ANR while the host was swapping; build daemon stopped and stable app checks repeated. These initial environment failures are retained in evidence. |
+| Modern USB / foreground receiver / notification permission | Not testable | Emulator has no attached USB SDR. The new preview's demo gate blocks satellite receiver startup; Android 11 has no Android 13 notification runtime permission. Requires suitable modern hardware and a current signed catalog. |
+| Real satellite audio / packets / HackRF | Not testable | No real satellite voice/packet verification or physical HackRF test. Spectrum and USB streaming do not prove decoding or antenna sensitivity. |
+| Store submission | Not testable | Owner registration/verification, support contact/final privacy policy, any required test track/production gate and catalog-service authorization remain. No store upload, rollout or service deployment performed. |
+
+Evidence and signed/source packages are under `%LOCALAPPDATA%\OrbitScope\release-prep`.
+Public store artwork/screenshots and setup instructions are committed under
+`docs/release/`; private keys, raw GP export, APK/AAB and downloaded source
+archives remain outside Git. Keep an encrypted off-device upload-key backup
+before the first store upload.

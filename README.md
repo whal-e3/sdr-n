@@ -6,11 +6,11 @@ Experimental, receive-only Android app for tracking cataloged satellites and ins
 
 ## Name and logo
 
-OrbitScope combines orbital observation and signal inspection. The app name appears in the Android launcher, system permission dialogs, screen header, and receiver notifications. The orbital logo is included in the launcher icon and [branding assets](docs/branding/). The existing Android application ID remains unchanged so installing this update preserves the app's catalog, imports, and settings.
+OrbitScope combines orbital observation and signal inspection. The app name appears in the Android launcher, system permission dialogs, screen header, and receiver notifications. The orbital logo is included in the launcher icon and [branding assets](docs/branding/). The release candidate uses `io.github.whal_e3.orbitscope`. It installs separately from the earlier `org.satelliteeavesdropper.app` development build; that build's private catalog, imports and settings are not migrated automatically. Finalize the ID before the first Play upload.
 
 ## Build and run
 
-For publication preparation, signing, release checks and store requirements, see [Publishing OrbitScope](docs/release/PUBLISHING.md). The release is still experimental; building an AAB does not configure a current catalog or publish the app.
+For publication preparation, signing, release checks and store requirements, see [Publishing OrbitScope](docs/release/PUBLISHING.md). The release is still experimental; building an AAB does not configure a current catalog or publish the app. **About** provides offline privacy information and bundled licenses. Store assets and submission notes are in `docs/release/`.
 
 1. Install Android Studio with Android SDK Platform 36, Build Tools 36.x, NDK 27.0.12077973, CMake, and a JDK 17. Use a physical Android 10+ phone with USB host/OTG support for SDR testing; an arm64 device is preferred. The x86_64 build target is for emulator UI/test-tone checks only.
 2. Open this repository as a project in Android Studio and let Gradle sync. Select the `app` run configuration and launch it. Alternatively, run `./gradlew.bat :app:assembleDebug` from PowerShell.
@@ -48,6 +48,10 @@ For a hardware check, open **Signal → SDR tester**, connect an RTL-SDR or Hack
 The **SDR tester** replaces the earlier catalog-dependent three-second USB diagnostic. Satellite reception in Target still requires a current signed catalog, current orbital elements, a supported downlink and a visible pass. The independent tester uses spectrum-only mode and cannot start a satellite decoder or bypass those reception gates. On Android, the RTL-SDR driver requests bias tee power off for passive antennas; this has not yet been measured on hardware.
 
 Receive sessions are started manually and run in a foreground service with a persistent notification and Stop action. Location permission is optional because coordinates can be entered manually. Internet permission is used for configured catalog downloads and explicit CelesTrak orbit lookups. USB permission is requested for the selected device. The app is scoped to curated public/amateur downlinks; it does not authorize interception of private, commercial, safety-critical, or command traffic. Check the rules that apply where you use it.
+
+## Release preparation
+
+A persistent upload key, signed preview APK/AAB, store artwork and source/license materials are prepared. AndroidX graphics-path JNI is rebuilt from its matching pinned source for 16 KB alignment. An Android 16 / 16 KB emulator reproduced a status-bar/header overlap; safe insets and an actual-tap regression fixed it. The final fresh debug checks passed eight tests on each platform, with three signed-cache benchmarks not testable without seeding a signed catalog. Publication still needs the owner's registration/contact details and a current catalog source before advertising satellite reception. See [publication status](docs/release/PUBLISHING.md) and [registration steps](docs/release/REGISTER_GOOGLE_PLAY.md).
 
 ## Development checks
 

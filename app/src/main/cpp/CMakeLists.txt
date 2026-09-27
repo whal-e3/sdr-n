@@ -12,6 +12,9 @@ set_target_properties(satellite_rx_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(satellite_rx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(ANDROID)
+    # Rebuild the matching AndroidX 1.0.1 JNI implementation with both 16 KB
+    # linker settings. Its Maven prebuilt omits common-page-size.
+    add_subdirectory(third_party/androidx-graphics-path)
     # Pinned, vendored libusb 1.0.30 and RTL-SDR Blog sources. USB device
     # discovery is deliberately bypassed in favor of Android's granted fd.
     set(LIBUSB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)

@@ -15,6 +15,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -32,6 +37,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -126,6 +132,7 @@ internal fun SatelliteScreen(
     val observerPreferences = remember(context) { ObserverPreferences(context) }
     val savedObserver = remember(observerPreferences) { observerPreferences.load() }
     var tab by rememberSaveable { mutableStateOf(AppTab.SKY) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
     var skyGlobe by rememberSaveable { mutableStateOf(false) }
     var globeSelectedNoradId by rememberSaveable { mutableStateOf<String?>(null) }
     var signedCatalog by remember { mutableStateOf<CatalogLoadResult?>(null) }
@@ -554,10 +561,13 @@ internal fun SatelliteScreen(
         }
     }
 
+    if (showAbout) AboutDialog(onDismiss = { showAbout = false })
     Scaffold(
         topBar = {
             Surface(color = OrbitColors.background) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+                Row(Modifier.fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
                         Text(stringResource(R.string.app_name), color = OrbitColors.cyan,
@@ -575,6 +585,7 @@ internal fun SatelliteScreen(
                         Text("${catalog?.manifest?.satellites?.size ?: 0} orbits",
                             color = OrbitColors.muted, style = MaterialTheme.typography.labelSmall)
                     }
+                    TextButton(onClick = { showAbout = true }) { Text("About") }
                 }
             }
         },

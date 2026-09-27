@@ -1,0 +1,18 @@
+import groovy.json.JsonOutput
+allprojects {
+    afterEvaluate { p ->
+        if (p.path == ':app') {
+            tasks.register('exportReleaseDependencies') {
+                doLast {
+                    def destination = System.getenv('ORBIT_DEPENDENCY_EXPORT')
+                    if (!destination) throw new GradleException('Set ORBIT_DEPENDENCY_EXPORT to a local JSON output path')
+                    def artifacts = configurations.releaseRuntimeClasspath.resolvedConfiguration.resolvedArtifacts.collect { a ->
+                        [group: a.moduleVersion.id.group, name: a.moduleVersion.id.name,
+                         version: a.moduleVersion.id.version, file: a.file.absolutePath]
+                    }.unique { it.group + ':' + it.name + ':' + it.version }.sort { it.group + ':' + it.name }
+                    new File(destination).text = JsonOutput.prettyPrint(JsonOutput.toJson(artifacts))
+                }
+            }
+        }
+    }
+}
