@@ -15,11 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -29,11 +24,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,7 +42,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -133,6 +124,7 @@ internal fun SatelliteScreen(
     val savedObserver = remember(observerPreferences) { observerPreferences.load() }
     var tab by rememberSaveable { mutableStateOf(AppTab.SKY) }
     var showAbout by rememberSaveable { mutableStateOf(false) }
+    var showSpaceTrackGuide by rememberSaveable { mutableStateOf(false) }
     var skyGlobe by rememberSaveable { mutableStateOf(false) }
     var globeSelectedNoradId by rememberSaveable { mutableStateOf<String?>(null) }
     var signedCatalog by remember { mutableStateOf<CatalogLoadResult?>(null) }
@@ -205,6 +197,7 @@ internal fun SatelliteScreen(
     var demoSnapshot by remember { mutableStateOf<ReceptionSnapshot?>(null) }
     var demoError by remember { mutableStateOf<String?>(null) }
     val reception by ReceptionState.snapshots.collectAsState()
+    val packetExportActions = rememberPacketExportActions()
     val receiving = reception.state == "Starting" || reception.state == "Receiving"
     LaunchedEffect(receiving, diagnosticCaptureRunning) {
         if (receiving || diagnosticCaptureRunning) demoRunning = false
@@ -561,55 +554,42 @@ internal fun SatelliteScreen(
         }
     }
 
+    OrbitAdaptiveWindow {
     if (showAbout) AboutDialog(onDismiss = { showAbout = false })
-    Scaffold(
-        topBar = {
-            Surface(color = OrbitColors.background) {
-                Row(Modifier.fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column {
-                        Text(stringResource(R.string.app_name), color = OrbitColors.cyan,
-                            style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                        Text(tab.label, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    }
-                    Column {
-                        Text(when (catalog?.source) {
-                            CatalogSource.LIVE -> if (supplementalRecords.isEmpty()) "SIGNED LIVE" else "SIGNED + EXTRA"
-                            CatalogSource.CACHED -> if (supplementalRecords.isEmpty()) "SIGNED CACHE" else "SIGNED + EXTRA"
-                            CatalogSource.DEMO -> "DEMO ONLY"
-                            null -> "LOADING"
-                        }, color = if (catalog?.source == CatalogSource.DEMO) OrbitColors.amber else OrbitColors.cyan,
-                            style = MaterialTheme.typography.labelSmall)
-                        Text("${catalog?.manifest?.satellites?.size ?: 0} orbits",
-                            color = OrbitColors.muted, style = MaterialTheme.typography.labelSmall)
-                    }
-                    TextButton(onClick = { showAbout = true }) { Text("About") }
-                }
-            }
+    if (showSpaceTrackGuide) SpaceTrackGuideDialog(
+        onDismiss = { showSpaceTrackGuide = false },
+        onImportFile = {
+            showSpaceTrackGuide = false
+            tab = AppTab.SKY
+            skyGlobe = false
+            importFile.launch(arrayOf("text/csv", "application/json", "text/plain", "application/octet-stream", "*/*"))
         },
-        bottomBar = {
-            NavigationBar(containerColor = OrbitColors.surface) {
-                AppTab.entries.forEach { destination ->
-                    NavigationBarItem(
-                        selected = tab == destination,
-                        onClick = { tab = destination },
-                        icon = { Text(destination.symbol) },
-                        label = { Text(destination.label) },
-                    )
-                }
-            }
+        importRunning = importRunning,
+    )
+    OrbitAdaptiveScaffold(
+        title = tab.label,
+        destinations = AppTab.entries.map { OrbitNavigationItem(it.label, it.symbol) },
+        selectedIndex = tab.ordinal,
+        onSelect = { tab = AppTab.entries[it] },
+        catalogStatus = when (catalog?.source) {
+            CatalogSource.LIVE -> if (supplementalRecords.isEmpty()) "SIGNED LIVE" else "SIGNED + EXTRA"
+            CatalogSource.CACHED -> if (supplementalRecords.isEmpty()) "SIGNED CACHE" else "SIGNED + EXTRA"
+            CatalogSource.DEMO -> if (supplementalRecords.isEmpty()) "DEMO ONLY" else "TRACKING ONLY"
+            null -> "LOADING"
         },
+        statusColor = if (catalog?.source == CatalogSource.DEMO) OrbitColors.amber else OrbitColors.cyan,
+        orbitCount = catalog?.manifest?.satellites?.size ?: 0,
+        onAbout = { showAbout = true },
     ) { contentPadding ->
         when (tab) {
             AppTab.SKY -> Column(Modifier.fillMaxSize().padding(contentPadding)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !skyGlobe, onClick = { skyGlobe = false },
                         label = { Text("List") })
                     FilterChip(selected = skyGlobe, onClick = { skyGlobe = true },
                         label = { Text("Globe") })
+                    TextButton(onClick = { showSpaceTrackGuide = true }) { Text("Space-Track guide") }
                 }
                 if (skyGlobe) GlobeScreen(
                     catalog = catalog,
@@ -847,12 +827,8 @@ internal fun SatelliteScreen(
                             }
                         }
                         item { SignalVisuals(reception) }
-                        if (reception.packets.isNotEmpty()) item {
-                            OrbitPanel {
-                                Text("CRC-CHECKED AX.25 FRAMES", color = OrbitColors.cyan,
-                                    style = MaterialTheme.typography.labelMedium)
-                                reception.packets.takeLast(10).forEach { Text(it) }
-                            }
+                        if (reception.decodedPackets.isNotEmpty()) item {
+                            PacketEvidencePanel(reception, packetExportActions)
                         }
                     }
                     SignalSource.SDR_TESTER -> {
@@ -936,7 +912,7 @@ internal fun SatelliteScreen(
                             "${"%.5f".format(Locale.US, it.latitudeDegrees)}°, ${"%.5f".format(Locale.US, it.longitudeDegrees)}°"
                         } ?: "No location set", style = MaterialTheme.typography.titleLarge)
                         locationMessage?.let { Text(it, color = OrbitColors.muted) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             LocationMode.entries.forEach { mode ->
                                 val label = when (mode) {
                                     LocationMode.AUTO -> "GPS"
@@ -1037,6 +1013,7 @@ internal fun SatelliteScreen(
                         OutlinedButton(onClick = { scope.launch { loadCatalog() } }, enabled = !catalogLoading) {
                             Text("Refresh catalog")
                         }
+                        TextButton(onClick = { showSpaceTrackGuide = true }) { Text("Space-Track guide") }
                     }
                 }
                 item { Text("Location stays on the phone and is used for local pass and Doppler calculations.",
@@ -1044,6 +1021,7 @@ internal fun SatelliteScreen(
                     style = MaterialTheme.typography.bodySmall) }
             }
         }
+    }
     }
 }
 
@@ -1055,7 +1033,7 @@ private fun Context.hasPreciseLocationPermission(): Boolean =
     checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
 @Composable
-private fun OrbitPanel(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun OrbitPanel(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = OrbitColors.surface,

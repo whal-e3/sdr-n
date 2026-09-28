@@ -225,7 +225,9 @@ internal fun DayScheduleScreen(
                 importMessage?.let { Text(it, color = MaterialTheme.colorScheme.secondary,
                     style = MaterialTheme.typography.bodySmall) }
                 if (catalog?.source == CatalogSource.DEMO) {
-                    Text("Demo data: illustrative passes; hardware reception disabled.",
+                    Text(if (importedCount > 0)
+                        "Demo radio catalog: hardware reception disabled. Choose All to browse imported orbits."
+                        else "Demo data: illustrative passes; hardware reception disabled.",
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
                 if (showDetails) {

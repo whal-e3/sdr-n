@@ -4,11 +4,13 @@ import android.os.SystemClock
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -214,9 +216,14 @@ internal fun GlobeScreen(
         liveNow = Instant.now()
     }
 
-    Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+    BoxWithConstraints(modifier.fillMaxSize()) {
+    // The square globe follows the current window, including rotation and unfolding. The
+    // surrounding controls stay readable without a tablet-wide globe pushing them far away.
+    val globeWidth = minOf((maxWidth - 32.dp).coerceAtLeast(0.dp),
+        (maxHeight * 0.65f).coerceIn(180.dp, 520.dp))
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Orbit explorer", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(if (isPreview) "PREVIEW TIME" else "LIVE PREDICTION",
                 color = if (isPreview) OrbitColors.amber else OrbitColors.cyan,
@@ -248,7 +255,7 @@ internal fun GlobeScreen(
         }
         if (engine == null && records.isNotEmpty() && error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
         val displayed = scene
-        Box(Modifier.fillMaxWidth()) {
+        Box(Modifier.width(globeWidth).align(Alignment.CenterHorizontally)) {
             GlobeCanvas(
                 markers = displayed?.markers.orEmpty(),
                 selectedNoradId = selectedNoradId,
@@ -375,6 +382,7 @@ internal fun GlobeScreen(
         }
         Text("Positions and above-horizon geometry are predictions. Signal shows receiver samples, audio and decoded packets separately.",
             modifier = Modifier.padding(bottom = 20.dp), style = MaterialTheme.typography.bodySmall, color = OrbitColors.muted)
+    }
     }
 }
 

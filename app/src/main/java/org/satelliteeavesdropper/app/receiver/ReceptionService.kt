@@ -71,6 +71,10 @@ data class ReceptionSnapshot(
     val audioFramesPlayed: Long = 0,
     val packets: List<String> = emptyList(),
     val error: String? = null,
+    /** Latest verified frames, oldest first; data is transient until explicitly exported. */
+    val decodedPackets: List<DecodedPacket> = emptyList(),
+    /** Previously dequeued frames evicted from the bounded history, not failed decoder frames. */
+    val omittedPacketCount: Long = 0,
 ) {
     /** Center of the digitally corrected FFT, including predicted Doppler. */
     val displayCenterHz: Double get() = rfCenterHz + predictedDopplerHz
@@ -212,6 +216,16 @@ class ReceptionService : Service() {
             }
             var handle = 0L
             var audioTrack: AudioTrack? = null
+            val decodedPackets = DecodedPacketBuffer(sessionId)
+            fun retainPacketEvidence(snapshot: ReceptionSnapshot): ReceptionSnapshot {
+                if (snapshot.sessionId != sessionId) return snapshot
+                val packetSnapshot = decodedPackets.snapshot()
+                return snapshot.copy(
+                    packets = packetSnapshot.map { it.displayText },
+                    decodedPackets = packetSnapshot,
+                    omittedPacketCount = decodedPackets.omittedPacketCount,
+                )
+            }
             try {
                 handle = NativeReceiver.nativeCreate(sampleRate)
                 require(handle != 0L) { "Could not create receiver" }
@@ -249,14 +263,16 @@ class ReceptionService : Service() {
                 }
                 val openCode = NativeReceiver.nativeOpenUsb(handle, connection.fileDescriptor, deviceType)
                 require(openCode == 0) { "USB receiver unavailable (code $openCode)" }
+                var appliedPredictedDopplerHz = 0.0
                 fun updateDoppler(): Pair<SatelliteLook, ObserverTracking> {
                     val observerTracking = observerSession.current(SystemClock.elapsedRealtime())
                     val look = tracking.first.lookFrom(observerTracking.location, Instant.now())
+                    appliedPredictedDopplerHz = look.dopplerShiftHz(frequencyHz.toDouble())
                     NativeReceiver.nativeSetCorrections(
                         handle,
                         frequencyHz.toDouble(),
                         0.0,
-                        look.dopplerShiftHz(frequencyHz.toDouble()),
+                        appliedPredictedDopplerHz,
                     )
                     return look to observerTracking
                 }
@@ -276,7 +292,6 @@ class ReceptionService : Service() {
                 )
                 ReceptionState.publish(initial)
                 val pcm = if (audioEnabled) ShortArray(2_048) else null
-                val packets = ArrayDeque<String>()
                 val waterfall = ArrayDeque<List<Float>>()
                 val frameEvidence = FrameEvidence()
                 var nextDisplayAt = 0L
@@ -290,8 +305,30 @@ class ReceptionService : Service() {
                         var drained = 0
                         while (drained < 16) {
                             val frame = NativeReceiver.nativeReadPacket(handle) ?: break
-                            packets.addLast(Ax25Formatter.format(frame))
-                            while (packets.size > 20) packets.removeFirst()
+                            val dequeuedAtUtc = Instant.now()
+                            val observer = observerSession.current(SystemClock.elapsedRealtime())
+                            val packetLook = tracking.first.lookFrom(observer.location, dequeuedAtUtc)
+                            val packetAfc = NativeReceiver.nativeAfcStats(handle)
+                            decodedPackets.add(frame, dequeuedAtUtc, PacketMetadata(
+                                sessionId = sessionId,
+                                decoderId = decoderId,
+                                targetNoradId = targetNoradId,
+                                targetName = targetName,
+                                device = receiverName,
+                                rfCenterHz = frequencyHz,
+                                sampleRateSps = sampleRate,
+                                predictedDopplerHz = appliedPredictedDopplerHz,
+                                afcTracking = packetAfc.getOrElse(0) { 0.0 } > 0.5,
+                                afcAppliedHz = packetAfc.getOrElse(1) { 0.0 },
+                                afcLastResidualHz = packetAfc.getOrElse(2) { 0.0 },
+                                lookAzimuthDegrees = packetLook.azimuthDegrees,
+                                lookElevationDegrees = packetLook.elevationDegrees,
+                                observerLatitudeDegrees = observer.location.latitudeDegrees,
+                                observerLongitudeDegrees = observer.location.longitudeDegrees,
+                                observerAltitudeMeters = observer.location.altitudeMeters,
+                                observerFeedState = observer.feedState,
+                                observerFixAgeSeconds = observer.fixAgeSeconds,
+                            ))
                             drained++
                         }
                     }
@@ -321,6 +358,7 @@ class ReceptionService : Service() {
                         if (processed > lastProcessed) samplesUpdatedAtElapsedMs = now
                         lastAccepted = accepted
                         lastProcessed = processed
+                        val packetSnapshot = decodedPackets.snapshot()
                         ReceptionState.publish(
                             ReceptionSnapshot(
                                 state = if (processed > 0) "Receiving" else "Starting",
@@ -352,7 +390,9 @@ class ReceptionService : Service() {
                                 latestVerifiedFrameAgeSeconds =
                                     frameEvidence.latestFrameAgeSeconds(verifiedFrames, now),
                                 audioFramesPlayed = audioFramesPlayed,
-                                packets = packets.toList(),
+                                packets = packetSnapshot.map { it.displayText },
+                                decodedPackets = packetSnapshot,
+                                omittedPacketCount = decodedPackets.omittedPacketCount,
                             ),
                         )
                         nextDisplayAt = now + 100
@@ -372,10 +412,10 @@ class ReceptionService : Service() {
                     } else delay(100)
                 }
             } catch (error: kotlinx.coroutines.CancellationException) {
-                ReceptionState.publish(ReceptionState.snapshots.value.stopped())
+                ReceptionState.publish(retainPacketEvidence(ReceptionState.snapshots.value).stopped())
                 throw error
             } catch (error: Exception) {
-                ReceptionState.publish(ReceptionState.snapshots.value.copy(
+                ReceptionState.publish(retainPacketEvidence(ReceptionState.snapshots.value).copy(
                     state = "Stopped", error = error.message ?: "Receive session failed",
                 ))
             } finally {

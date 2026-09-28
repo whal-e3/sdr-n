@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,7 +26,7 @@ internal fun AboutDialog(onDismiss: () -> Unit) {
     val content = remember(document) {
         document?.let { path -> context.assets.open("legal/$path").bufferedReader().use { it.readText() } }
     }
-    AlertDialog(
+    OrbitAdaptiveDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (document == null) "About OrbitScope" else document!!.removeSuffix(".txt")) },
         text = {

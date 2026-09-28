@@ -110,6 +110,21 @@ class OrbitImportRepositoryTest {
         assertEquals(OrbitImportFormat.OMM_CSV, requireNotNull(repo.load()).summary.format)
     }
 
+    @Test fun downloadedLoginPageReportsActionableErrorAndKeepsPreviousImport() = runBlocking {
+        val repo = OrbitImportRepository(temp.newFolder())
+        val previous = repo.importStream("[$VALID_OMM]".byteInputStream(), "good.json")
+        for (name in listOf("login.html", "space-track-gp.csv", "space-track-gp.json")) {
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                runBlocking {
+                    repo.importStream("<!DOCTYPE html><html>Sign in</html>".byteInputStream(), name)
+                }
+            }
+            assertTrue(error.message.orEmpty().contains("HTML webpage"))
+            assertEquals(previous.summary, repo.load()?.summary)
+            assertEquals(previous.records.single().noradId, repo.load()?.records?.single()?.noradId)
+        }
+    }
+
     @Test fun malformedGpCsvHeaderLeavesPreviousImportIntact() = runBlocking {
         val repo = OrbitImportRepository(temp.newFolder())
         repo.importStream("[$VALID_OMM]".byteInputStream(), "good.json")

@@ -68,6 +68,9 @@ object OrbitImportParser {
         val reader = PushbackReader(BufferedReader(InputStreamReader(byteStream, charset), 8192), 2)
         val first = nextNonWhitespace(reader)
         require(first != -1) { "The orbital data file is empty" }
+        require(first != '<'.code) {
+            "This is an HTML webpage, not orbital data. Download raw GP CSV, OMM JSON or TLE text instead of saving a login page."
+        }
         return if (first == '['.code || first == '{'.code) {
             parseOmmJson(reader, first, accept)
         } else if (formatHint == OrbitImportFormat.OMM_CSV) {

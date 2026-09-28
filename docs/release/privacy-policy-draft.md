@@ -14,7 +14,7 @@ Android and the device's location providers have their own settings and privacy 
 
 ## SDR and received signals
 
-With your USB permission, OrbitScope reads samples from an attached supported SDR. It processes spectrum/IQ views and supported audio/packet signals on your device. Recent receiver status and decoded packet text are kept in memory for display. The current app does not upload SDR samples, received audio, decoded packets or USB device information. It does not record your microphone. A manually started receiver can continue with a visible foreground-service notification and Stop control.
+With your USB permission, OrbitScope reads samples from an attached supported SDR. It processes spectrum/IQ views and supported audio/packet signals on your device. Recent receiver status and the latest 20 decoded frames are kept in memory for display. When you choose Copy or Save, the app exports full decoded frame bytes and reception metadata as JSON, including the observer coordinates used for reception. Copy places this data on the system clipboard; Save writes to the location you select with Android’s document picker, which may be a local or cloud document provider. The app does not automatically record or save all packets. The current app does not upload SDR samples, received audio, decoded packets or USB device information. It does not record your microphone. A manually started receiver can continue with a visible foreground-service notification and Stop control.
 
 ## Imported files and saved settings
 
@@ -30,9 +30,11 @@ An explicitly requested NORAD-ID lookup sends that satellite ID to CelesTrak ove
 
 The current app has no app account or login, advertising SDK or developer analytics/crash-report upload integration. Store/platform services operate under their own privacy policies. Revise this policy and the store declarations if these features are added.
 
+The optional Space-Track guide opens signup, login, documentation and orbital-data export pages in an external browser. Account details, credentials and cookies are handled by Space-Track and that browser; OrbitScope does not collect or store them. Space-Track receives browser requests under its own policies. The guide can copy the public export URL to the device clipboard. Downloaded orbital data enters OrbitScope only when you choose the file with Android's document picker.
+
 ## Retention and deletion
 
-Local settings and cached records remain until replaced, cleared through available app controls, or removed through Android's **Clear storage** or uninstall action. Clearing app storage removes the app's local catalogs, imported records and settings; it does not delete an original file you selected elsewhere. Receiver display data is temporary in-process state. Local Android diagnostic logs are managed by the operating system. Network-provider retention is described above and must be confirmed for the released catalog service.
+Local settings and cached records remain until replaced, cleared through available app controls, or removed through Android's **Clear storage** or uninstall action. Clearing app storage removes the app's local catalogs, imported records and settings; it does not delete an original file you selected elsewhere. Receiver display data is temporary in-process state. Saved packet exports remain in the document location you selected until you delete them there; uninstalling OrbitScope does not delete exported files. Clipboard retention is controlled by Android and other apps with clipboard access. Local Android diagnostic logs are managed by the operating system. Network-provider retention is described above and must be confirmed for the released catalog service.
 
 ## Permissions and contact
 

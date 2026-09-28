@@ -510,6 +510,26 @@
     ]
   },
   {
+    "coordinate": "androidx.window:window:1.5.1",
+    "sha256": "3c3061966f012fc22f2e99701f683e82e732435ae2f2a1d5b2f99d82bb7b8864",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ]
+  },
+  {
+    "coordinate": "androidx.window:window-core-android:1.5.1",
+    "sha256": "b289ce85090f1f976569fa92bbac84011f54ba1b21f0ce883655b34c8f9f9eea",
+    "licenses": [
+      {
+        "name": "The Apache Software License, Version 2.0",
+        "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
+    ]
+  },
+  {
     "coordinate": "com.google.code.gson:gson:2.11.0",
     "sha256": "57928d6e5a6edeb2abd3770a8f95ba44dce45f3b23b7a9dc2b309c581552a78b",
     "licenses": [

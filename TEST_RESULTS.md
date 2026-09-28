@@ -4,6 +4,8 @@ Test dates: 2026-09-24–27 (Asia/Seoul). Device: Samsung Galaxy A30 (SM-A305N),
 
 The [full-app review below](#full-app-review--september-27) records the final globe build, fixes and repeated automated checks. Earlier sections retain evidence for their dated APKs; their completed day calculations and physical USB checks were not all repeated on the final build.
 
+The September 28 Space-Track guide update below was tested after the rooting factory reset. That reset erased the earlier private signed catalog; the current installation has the bundled demo and no automatic update endpoint.
+
 The September 26–27 orbit-feature build repeated all eight instrumentation tests with the real 69,438-record catalog and checked a real historical record's UI. Its September 27 phone day schedule completed all 69,438 entries with 234,549 predicted passes and 31 reported propagation failures. Completion was first observed around 00:17 KST after the midnight rollover, including brief tab/target checks; this is an observed run, not an isolated timing benchmark. The desktop three-time diagnostic below is separate propagation evidence. Earlier manual checks and large-catalog stress runs remain dated evidence for the build used in each check; they were not all repeated on this APK. The completed September 26 30,154-entry day used historical-record APK SHA-256 `72e6b32138c4e4b20dea9d050b71b9a1541f09884a4c990da403b2d7f379d22f`; the full 60,000-record lifecycle run used the prior 102-test memory-fix APK SHA-256 `04cd5f98976a4ef097713b5d8efbad13ed90adc0e56637bd0ea71ad50daf851c`.
 
 | Check | Result | Evidence / limit |
@@ -275,3 +277,62 @@ Public store artwork/screenshots and setup instructions are committed under
 `docs/release/`; private keys, raw GP export, APK/AAB and downloaded source
 archives remain outside Git. Keep an encrypted off-device upload-key backup
 before the first store upload.
+
+## Space-Track download guide — September 28
+
+Device: rooted Samsung Galaxy A30 (SM-A305N), Android 11. Magisk root reconfirmed with `uid=0(root)`. The existing JDK 17 and Android SDK in `~/.local/satellite-toolchain/` built the update offline. No account credentials were entered, service deployed, or commits pushed.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| JVM regressions | Passed | 178 tests across 34 suites; no failures, errors or skipped tests. Includes HTML login-page downloads disguised as HTML/CSV/JSON and preservation of previously imported data. |
+| Guide and document-picker interaction | Passed | New actual-tap phone test opens the guide, scrolls to Copy, checks the copied HTTPS Space-Track GP CSV URL, closes/reopens the guide, opens Android DocumentsUI and cancels back to Sky. The first run tapped during scrolling and missed Copy; the test now waits for stable visible bounds. Manual taps also verified the copy confirmation. |
+| Android file parsing and About | Passed | Two existing ContentResolver tests accepted GP CSV and OMM JSON; the existing actual-tap About/privacy test passed. Together with the guide, all four selected instrumentation tests passed on the final debug source. |
+| Signed release and Play bundle | Passed | `assembleRelease`, `bundleRelease` and release vital lint passed. APK/AAB native ELF alignment checks passed; these are packaging checks, not another 16 KB device runtime test. |
+| Release install and cold launch | Passed | Updated the existing release with `adb install -r`; Android cold launch reported `Status: ok`. No AndroidRuntime errors in the cleared startup log. Temporary debug/test applications were removed, leaving one OrbitScope package. Temporary USB keep-awake was restored to off. |
+| External browser handoff | Passed | The signed release's signup button opened Chrome's FirstRunActivity. Browser terms/setup were left for the user; returning to OrbitScope retained the guide. |
+| Live Space-Track signup/login/export | Not testable | No approved-account browser session was used. Chrome first-use setup and the user's authentication remain required to verify the CSV download end to end. The link uses the documented recent GP filter and CSV format, without an unverified filename API parameter. |
+| Automatic account synchronization | Not testable | Not implemented. This update provides browser signup/login instructions and manual download/import; OrbitScope does not collect credentials or share browser cookies. |
+| Satellite reception | Not testable | The reset erased the signed cache and no signed update endpoint is configured. Imported orbital files remain tracking only and do not supply receiver profiles or bypass reception gates. |
+
+The guide is available in **Sky → Space-Track guide** and Location's orbital-catalog panel. It explains raw CSV saving, account approval/login pages, the 64 MiB file limit and Space-Track's maximum hourly GP retrieval guidance. **All** browses records without a location; pass views require a location and **All orbits** to include records without receiver profiles. The header reports **TRACKING ONLY** when supplemental records exist alongside the demo catalog. Privacy text documents the external browser and public-URL clipboard action.
+
+Signed APK SHA-256: `371d4c6ded021027a3b47f4eb99bb364704dde46622bfc2e257c121e8144e5b5`.
+Signed AAB SHA-256: `a0a1baefca6fb3ac490c757b8af90105cd46b35b0b68d687ec2b61180825c221`.
+
+## Rooted A30 RTL-SDR repeat — September 28
+
+The user attached the same RTL2838UHIDIR (`0bda:2838`) with their previously reported monopole antenna after switching ADB to Wi-Fi (`192.168.0.16:5555`). These checks used the signed Space-Track-guide APK recorded above. The satellite catalog state was not retested.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| Wi-Fi ADB and USB host detection | Passed | ADB remained connected with the computer's USB cable removed. Android reported `data_role=host`, power source, and one Realtek RTL2838UHIDIR; OrbitScope's scan found one supported SDR. |
+| Android USB permission denial/retry/grant | Passed | Canceled the first USB prompt, retried Test SDR, and granted the next prompt. SatelliteUsbDiagnostic logged all three events; Android recorded permission for the app UID 10246. |
+| Ten-second receive-only SDR test at 100 MHz | Passed | The live UI showed 4,325,376 processed samples during capture. Final result: 10,223,616 accepted and processed, zero dropped complex samples, measured 1,021,953 samples/s. Decoder was off. |
+| Automatic stop and USB cleanup | Passed | UI changed to STOPPED and labeled the plot as retained past samples. Root inspection of the app's file descriptors found no open `/dev/bus/usb/` handle afterward. |
+| Runtime failures | Passed | No AndroidRuntime errors in the cleared test log. Wi-Fi ADB remained reachable after capture. |
+| Antenna performance, RF sensitivity, satellite audio/packet decoding | Not testable | USB/sample/DSP delivery and a spectrum display do not establish those results. No satellite receive session was started. |
+
+## Packet export and adaptive screens — September 28
+
+Decoded AX.25 frames now retain exact native frame-body bytes and metadata captured at Android queue dequeue. Users can copy or save a UTF-8 JSON batch or individual frame from Signal → Receiver. The latest 20 records remain temporary until explicitly exported; evictions are counted. Exports include observer coordinates and label dequeue time and selected tracking target accurately. They are not IQ/audio recordings or proof of satellite identity.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| JVM regression suite | Passed | 199 tests across 37 suites, no failures/errors/skips. New tests cover immutable exact binary bodies, Unicode UTF-8 JSON, per-frame metadata, bounded history, and narrow/wide/short/fold geometry. |
+| A30 clipboard and real file export | Passed | Two actual-tap tests copied batches and individual frames, saved JSON through Android CreateDocument to Downloads and read it back losslessly, changed the displayed packets while the picker was open to verify a frozen selection, canceled another save and checked no file was created. Test files were deleted afterward. Stopped synthetic packet fixtures test export behavior, not native decoding or satellite reception. |
+| A30 guide, About and native DSP regressions | Passed | Five selected tests passed together with the two export tests (7 total, 58.297 seconds). Covered the adapted About/privacy and Space-Track dialogs and existing synthetic carrier, NFM audio and AFC checks. |
+| First Android 16 emulator UI run | Failed | System UI's not-responding modal blocked app controls during a concurrent build/first boot under host memory pressure. Five UI tests failed to find controls; the JNI graphics test passed. The emulator was stopped to separate build and verification runs. The fold test's clickable ancestor lookup was also corrected. This was not evidence of a satellite receiver failure. |
+| Injected fold and dialog regressions | Failed, then fixed / passed | A popup opened after an injected fold missed the earlier event through its separate collector and remained across the hinge. One Activity collector now shares current posture with the scaffold and dialogs. Both final tests passed: vertical crease navigation, all visible About text clear of the hinge, live book/tabletop changes while About is open, and retained Signal/Test tone state after unfolding. No physical Fold was used. |
+| Android 16 packet export | Passed | Both final export tests passed together with the two fold regressions (4 tests, 97.958 seconds). Saved JSON readback preserved both exact frames/metadata while the displayed selection changed; cancel created no file; batch and individual clipboard JSON were verified. Earlier harness failures exposed selected-tab semantics, scrolling the rail instead of the page, native picker title matching, and stale tap geometry. Helpers now select proper controls, refresh nodes and use accessibility clicks for export/picker controls. Fixtures are synthetic and the receiver is stopped. |
+| Resized Android 16 windows | Passed | Actual taps reached all four tabs and opened/closed About at 320×720, 840×840 and 960×420 dp. Signal's selected Test tone survived resizing back to 320 dp. Screenshots were inspected; compact windows use bottom navigation, wide and short windows use a rail. These are emulator window checks, not a physical Fold test. |
+| Release lint | Passed | Zero errors, 18 warnings, three hints. Fixed the new library’s restricted empty WindowLayoutInfo constructor by using nullable initial state and clarified the coroutine lambda syntax flagged by lint. No baseline or suppression was added. |
+| Signed APK/AAB packaging | Passed | Debug/test APKs and signed release APK/AAB built. All eight APK/AAB ELF copies passed 16 KB alignment checks; APK ZIP alignment also passed. Packaging checks do not replace runtime checks. |
+| Signed update launch and retained imports | Passed | Final signed APK installed with `adb install -r`. Awake cold launch reported `Status: ok`, `LaunchState: COLD`, 1,250 ms. An initial screen-off launch waited about 54 seconds until the phone was woken; the awake check was repeated. The 31,853-record private import file’s SHA-256 still matched its pre-update value. Debug/test packages remain removed from the phone. |
+| Runtime failure inspection | Passed | No OrbitScope entries in collected A30 or emulator crash buffers. The emulator buffer retained an earlier `uiautomator` command's duplicate UiAutomation registration exception; this is a test-tool failure, alongside the first-boot System UI issue recorded above. Final focused instrumentation completed without failures. |
+| Updated-app physical SDR capture | Not testable | Scan and Android USB state reported zero attached USB devices and device/sink role at this check. The earlier ten-second RTL-SDR capture remains recorded above; it was not repeated with this update. |
+| Physical Galaxy Z Fold / real satellite packets | Not testable | No physical Fold or verified real satellite frame was available. Injected WindowManager folds and resized emulator windows will be reported separately; synthetic packet fixtures do not establish real reception. |
+
+The adaptive shell selects rail or bottom navigation from current constraints, consumes safe/keyboard insets, bounds reading width, and uses the largest clear pane for separating folds or occluding hinges. Dialogs use the same live posture policy. The release runtime license inventory and matching source archives now cover 71 artifacts including AndroidX WindowManager. No service deployment or Git push was performed.
+
+Signed APK SHA-256: `4d310aa91d96598a7c6f32d3ff1be78ca4ffca5dfe3e9f42a65bc74c987d64b7`.
+Signed AAB SHA-256: `801253cf25430f8ed85385857f1b77802ac514641a3ff1283c356ed6392da044`.

@@ -5,7 +5,7 @@ force; see the root NOTICE.md and **About → Licenses** inside the app.
 
 ## Inventory and notices
 
-The resolved release runtime contains 69 artifacts. The inventory, artifact
+The resolved release runtime contains 71 artifacts. The inventory, artifact
 hashes, POM license declarations, embedded notices and common license texts
 are packaged under `app/src/main/assets/legal/`. Native copyright notices,
 source revisions and modified build settings remain with the vendored source.
@@ -46,7 +46,7 @@ python3 tools/package_dependency_sources.py /tmp/orbitscope-dependencies.json /p
 python3 tools/package_source_release.py /path/outside/repository/dependency-sources /path/outside/repository/orbitscope-complete-source.tar.gz
 ```
 
-All 69 source archives were downloaded successfully for this candidate from
+All 71 source archives were downloaded successfully for this candidate from
 Google Maven/Maven Central. Their manifest records official URLs, coordinates
 and SHA-256 hashes. The packaging script checks completeness, source hashes
 and a clean committed tree before combining app/native/dependency source.
