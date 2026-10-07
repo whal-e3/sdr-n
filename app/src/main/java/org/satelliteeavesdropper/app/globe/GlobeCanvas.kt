@@ -77,6 +77,7 @@ internal data class GlobeMarker(
     val name: String,
     val position: EarthFixedPosition,
     val aboveHorizon: Boolean = false,
+    val decodable: Boolean = false,
 )
 
 private data class GlobeSurfaceState(val bitmap: Bitmap? = null, val failed: Boolean = false)
@@ -132,6 +133,7 @@ internal fun GlobeCanvas(
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
     }
+    val markerDiamond = remember { Path() }
     val currentMarkers by rememberUpdatedState(markers)
     val currentProjection by rememberUpdatedState(projection)
     val currentOnSatelliteSelected by rememberUpdatedState(onSatelliteSelected)
@@ -174,6 +176,7 @@ internal fun GlobeCanvas(
                     .semantics {
                         contentDescription = buildString {
                             append("3D Earth globe, $visibleCount satellite markers in view. Drag to rotate, pinch to zoom, and tap a satellite to select it.")
+                            append(" Filled diamonds mark decodable satellites; hollow circles mark tracking-only satellites.")
                             selected?.let { append(" Selected satellite: ${it.name}, NORAD ${it.noradId}.") }
                             selectedViewStatus?.let { append(" $it.") }
                         }
@@ -268,7 +271,21 @@ internal fun GlobeCanvas(
                                     else -> OrbitColors.blue
                                 }
                                 drawCircle(color.copy(alpha = if (isSelected) 0.18f else 0.10f), if (isSelected) 11.dp.toPx() else 6.dp.toPx(), position)
-                                drawCircle(color, if (isSelected) 4.dp.toPx() else 2.8.dp.toPx(), position)
+                                if (marker.decodable) {
+                                    val radius = if (isSelected) 5.dp.toPx() else 3.8.dp.toPx()
+                                    markerDiamond.apply {
+                                        reset()
+                                        moveTo(position.x, position.y - radius)
+                                        lineTo(position.x + radius, position.y)
+                                        lineTo(position.x, position.y + radius)
+                                        lineTo(position.x - radius, position.y)
+                                        close()
+                                    }
+                                    drawPath(markerDiamond, color)
+                                } else {
+                                    drawCircle(color, if (isSelected) 4.dp.toPx() else 2.8.dp.toPx(), position,
+                                        style = Stroke(1.3.dp.toPx()))
+                                }
                                 if (isSelected) drawCircle(OrbitColors.white, 7.dp.toPx(), position, style = Stroke(1.2.dp.toPx()))
                             }
                         observerPosition?.let { position ->

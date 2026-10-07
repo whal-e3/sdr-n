@@ -86,7 +86,7 @@ internal fun SpaceTrackGuideDialog(
                 message?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
                 Text("Save the raw data as space-track-gp.csv in Downloads. If the browser displays text, use its download or save-file option. Do not save the login page, an HTML webpage, or a PDF.")
                 Text("4. Import the downloaded file", fontWeight = FontWeight.Bold)
-                Text("Tap Import downloaded file below and choose the CSV in Downloads. In Sky, choose All to browse imported records. For pass predictions, set your location and select All orbits; Radio profiles hides records without a receiver profile.")
+                Text("Tap Import downloaded file below and choose the CSV in Downloads. In Sky, choose Satellites and All satellites to browse imported records. For pass predictions, set your location, choose Passes and All satellites, then select a pass time. Decodable shows only satellites with a supported radio decoder configuration.")
                 Text("Imported orbits are saved on this phone for tracking only. Repeat the download and import when you need newer elements; this is a manual update.")
                 Text("Satellite reception still requires a current signed radio catalog. A Space-Track file supplies orbital elements, not transmitter frequencies or supported decoder profiles.",
                     color = MaterialTheme.colorScheme.secondary)

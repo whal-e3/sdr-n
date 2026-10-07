@@ -630,7 +630,7 @@ internal fun SatelliteScreen(
                         Text("AUTOMATIC SUGGESTION", color = OrbitColors.cyan,
                             style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         Text(currentRecommendation.name, style = MaterialTheme.typography.titleLarge)
-                        Text("Highest visible, configured public downlink in the current catalog.",
+                        Text("Highest visible satellite with a decodable downlink in the current catalog.",
                             color = OrbitColors.muted)
                         if (selected != null) OutlinedButton(onClick = { selectedNoradId = null }) { Text("Track suggested target") }
                     }
@@ -648,6 +648,7 @@ internal fun SatelliteScreen(
                             Text(if (selected == null) "AUTO TARGET" else "SELECTED TARGET",
                                 color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium)
                             Text(target.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            DecoderSupportBadge(target)
                             Text("NORAD ${target.noradId} · ${target.transmitters.size} cataloged downlinks")
                             OutlinedButton(onClick = {
                                 globeSelectedNoradId = target.noradId
@@ -656,10 +657,12 @@ internal fun SatelliteScreen(
                             }) { Text("View on globe") }
                             target.orbitHistoryLabel(targetNow)?.let { Text(it, color = OrbitColors.amber) }
                             if (target.transmitters.isNotEmpty()) {
-                                Text("${targetDownlinks?.receiverConfigured?.size ?: 0} configured for this receiver · " +
+                                Text("${targetDownlinks?.receiverConfigured?.size ?: 0} decodable downlinks · " +
                                     "${targetDownlinks?.referenceOnly?.size ?: 0} reference entries",
                                     color = OrbitColors.muted)
                             }
+                            Text(decoderSupport(target).explanation, style = MaterialTheme.typography.bodySmall,
+                                color = OrbitColors.muted)
                             if (signedTarget?.orbitElements() != target.orbitElements() && target.transmitters.isEmpty()) {
                                 val importedRecord = imported?.records?.find { it.noradId == target.noradId }
                                 if (importedRecord?.orbitElements() == target.orbitElements()) {
@@ -705,7 +708,7 @@ internal fun SatelliteScreen(
                     }
                     if (targetDownlinks?.receiverConfigured?.isNotEmpty() == true) item {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${if (targetIsHistorical) "HISTORICAL RECEIVER PROFILES" else "CONFIGURED FOR RECEPTION"} · ${targetDownlinks.receiverConfigured.size}",
+                            Text("${if (targetIsHistorical) "HISTORICAL DECODABLE DOWNLINKS" else "DECODABLE DOWNLINKS"} · ${targetDownlinks.receiverConfigured.size}",
                                 color = OrbitColors.cyan, style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold)
                             Text(if (targetIsHistorical) "Cataloged receiver profiles retained for reference. Current reception is disabled."
@@ -715,7 +718,7 @@ internal fun SatelliteScreen(
                     }
                     if (targetDownlinks?.receiverConfigured?.isEmpty() == true && target.transmitters.isNotEmpty()) item {
                         OrbitPanel {
-                            Text("No receiver-configured downlink", style = MaterialTheme.typography.titleMedium)
+                            Text("Tracking only · no decodable downlink", style = MaterialTheme.typography.titleMedium)
                             Text(if (targetIsHistorical) "None of this historical target's downlinks is configured for reception in this app."
                             else "This target can be tracked, but none of its cataloged downlinks is configured for reception in this app.",
                                 color = OrbitColors.muted)
@@ -732,11 +735,11 @@ internal fun SatelliteScreen(
                         val eligible = !historical && signedSelection && fresh && observer != null &&
                             (targetLook?.elevationDegrees ?: -90.0) >= 0
                         OrbitPanel {
-                            Text(if (historical) "HISTORICAL RECEIVER PROFILE" else "RECEIVER CONFIGURED", color = OrbitColors.cyan,
+                            Text(if (historical) "HISTORICAL DECODABLE DOWNLINK" else "DECODABLE DOWNLINK", color = OrbitColors.cyan,
                                 style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             Text("${"%.6f".format(Locale.US, tx.frequencyHz / 1_000_000.0)} MHz",
                                 style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                            Text("${tx.mode} · ${tx.decoderId ?: "no supported decoder"} · ${tx.status}")
+                            Text("${tx.mode} · ${decoderSupport(listOf(tx)).outputLabel} · ${tx.status}")
                             Text(tx.policyAndAntennaLabel, color = OrbitColors.muted)
                             if (!eligible) Text(when {
                                 historical -> "Reception disabled from source-reported decay date."

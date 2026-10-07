@@ -3,16 +3,15 @@ package org.satelliteeavesdropper.app.day
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
@@ -41,6 +40,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import org.satelliteeavesdropper.app.dayPassStatus
+import org.satelliteeavesdropper.app.DecoderSupportBadge
 import org.satelliteeavesdropper.app.dayPredictionStopsAtDecay
 import org.satelliteeavesdropper.app.orbitHistoryLabel
 import org.satelliteeavesdropper.app.data.CatalogLoadResult
@@ -54,7 +54,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private enum class ListMode { UPCOMING, PASSES, NOW, ALL, DOWNLINKS }
+private enum class SkyListView { PASSES, SATELLITES }
 
 /** Browses every orbital record, including those with no downlink, and all passes on a local day. */
 @Composable
@@ -88,8 +88,9 @@ internal fun DayScheduleScreen(
         }
     }
     var dayOffset by rememberSaveable { mutableIntStateOf(0) }
-    var mode by rememberSaveable { mutableStateOf(ListMode.UPCOMING) }
-    var radioProfilesOnly by rememberSaveable { mutableStateOf(true) }
+    var view by rememberSaveable { mutableStateOf(SkyListView.PASSES) }
+    var passTimeView by rememberSaveable { mutableStateOf(PassTimeView.UPCOMING) }
+    var decodableOnly by rememberSaveable { mutableStateOf(true) }
     var query by rememberSaveable { mutableStateOf("") }
     var showDetails by rememberSaveable { mutableStateOf(false) }
     val day = today.plusDays(dayOffset.toLong())
@@ -97,9 +98,15 @@ internal fun DayScheduleScreen(
         ScheduleCacheKey(ScheduleCatalogIdentity(it.manifest), it.manifest.sequence, it.manifest.generatedAt, it.source,
             it.manifest.satellites.size, supplementalRevision, observer, day, zone)
     }
-    var visiblePassLimit by remember(key, query, mode, radioProfilesOnly) { mutableIntStateOf(150) }
+    // "Now" has no meaning on a future date. Keep future-day browsing useful.
+    LaunchedEffect(dayOffset) {
+        if (dayOffset > 0 && passTimeView == PassTimeView.IN_SIGHT) {
+            passTimeView = PassTimeView.FULL_DAY
+        }
+    }
+    var visiblePassLimit by remember(key, query, view, passTimeView, decodableOnly) { mutableIntStateOf(150) }
     val listState = rememberLazyListState()
-    LaunchedEffect(key, query, mode, radioProfilesOnly) { listState.scrollToItem(0) }
+    LaunchedEffect(key, query, view, passTimeView, decodableOnly) { listState.scrollToItem(0) }
     var schedule by remember(key) { mutableStateOf(key?.let(scheduleCache::prepare)) }
 
     LaunchedEffect(key) {
@@ -146,8 +153,8 @@ internal fun DayScheduleScreen(
             }
         }
     }
-    val passClock = if (mode == ListMode.UPCOMING || mode == ListMode.NOW) now else null
-    val shownPasses = remember(schedule?.passes, priorityPasses, matchingIds, mode, radioProfilesOnly, day, zone, passClock) {
+    val passClock = if (passTimeView != PassTimeView.FULL_DAY) now else null
+    val shownPasses = remember(schedule?.passes, priorityPasses, matchingIds, passTimeView, decodableOnly, day, zone, passClock) {
         val base = schedule?.passes.orEmpty()
         // The day engine already sorts its results on a worker thread. Avoid
         // sorting tens of thousands of passes on every Compose update.
@@ -155,17 +162,13 @@ internal fun DayScheduleScreen(
             (base + priorityPasses).distinctBy { it.satellite.record.noradId to it.pass.aos },
         )
         val matching = if (matchingIds == null) all else all.filter { it.satellite.record.noradId in matchingIds }
-        val radioFiltered = passesForRadioView(matching, radioProfilesOnly)
-        passesForTimeView(radioFiltered, when (mode) {
-            ListMode.UPCOMING -> PassTimeView.UPCOMING
-            ListMode.NOW -> PassTimeView.IN_SIGHT
-            ListMode.PASSES, ListMode.ALL, ListMode.DOWNLINKS -> PassTimeView.FULL_DAY
-        }, day, zone, now)
+        val decoderFiltered = passesForRadioView(matching, decodableOnly)
+        passesForTimeView(decoderFiltered, passTimeView, day, zone, now)
     }
-    val shownSatellites = remember(schedule?.satellites, matchingIds, mode) {
+    val shownSatellites = remember(schedule?.satellites, matchingIds, decodableOnly) {
         schedule?.satellites.orEmpty().filter { satellite ->
             (matchingIds == null || satellite.record.noradId in matchingIds) &&
-                (mode != ListMode.DOWNLINKS || satellite.hasConfiguredDownlink)
+                (!decodableOnly || satellite.hasConfiguredDownlink)
         }
     }
     val searchHasOnlyDateLimitedRecords = remember(schedule?.satellites, matchingIds, day, zone) {
@@ -176,8 +179,8 @@ internal fun DayScheduleScreen(
             matches.any() && matches.all { it.record.predictionEndBeforeDecay(start, end) == null }
         }
     }
-    val passCounts = remember(schedule?.passes, priorityPasses, mode) {
-        if (mode != ListMode.ALL && mode != ListMode.DOWNLINKS) emptyMap()
+    val passCounts = remember(schedule?.passes, priorityPasses, view) {
+        if (view != SkyListView.SATELLITES) emptyMap()
         else {
             val base = schedule?.passes.orEmpty()
             val counted = if (priorityPasses.isEmpty()) base else
@@ -226,7 +229,7 @@ internal fun DayScheduleScreen(
                     style = MaterialTheme.typography.bodySmall) }
                 if (catalog?.source == CatalogSource.DEMO) {
                     Text(if (importedCount > 0)
-                        "Demo radio catalog: hardware reception disabled. Choose All to browse imported orbits."
+                        "Demo radio catalog: hardware reception disabled. Choose Satellites and All satellites to browse imports."
                         else "Demo data: illustrative passes; hardware reception disabled.",
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
@@ -235,7 +238,7 @@ internal fun DayScheduleScreen(
                         style = MaterialTheme.typography.bodySmall)
                     Text("Import GP CSV, OMM JSON, or TLE text for tracking only. Multiple files accumulate; imports never enable radio reception.",
                         style = MaterialTheme.typography.bodySmall)
-                    Text("All includes historical orbital records. Source-reported decay dates use UTC; current predictions and reception stop at the start of that date. The date does not establish an exact event time or cause. Earlier days can retain historical pass predictions.",
+                    Text("All satellites includes historical orbital records. Source-reported decay dates use UTC; current predictions and reception stop at the start of that date. The date does not establish an exact event time or cause. Earlier days can retain historical pass predictions.",
                         style = MaterialTheme.typography.bodySmall)
                 }
                 if (schedule == null) Text(if (catalog == null) "Loading catalog…" else "Reading orbital elements…")
@@ -297,43 +300,64 @@ internal fun DayScheduleScreen(
                         style = MaterialTheme.typography.bodySmall)
                 }
                 lookupMessage?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
-                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = mode == ListMode.UPCOMING, onClick = { mode = ListMode.UPCOMING }, label = { Text("Upcoming") })
-                    FilterChip(selected = mode == ListMode.PASSES, onClick = { mode = ListMode.PASSES }, label = { Text("Day passes") })
-                    FilterChip(selected = mode == ListMode.NOW, onClick = { mode = ListMode.NOW }, label = { Text("In sight") })
-                    FilterChip(selected = mode == ListMode.ALL, onClick = { mode = ListMode.ALL }, label = { Text("All") })
-                    FilterChip(selected = mode == ListMode.DOWNLINKS, onClick = { mode = ListMode.DOWNLINKS }, label = { Text("Downlinks") })
+                Text("View", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = view == SkyListView.PASSES, onClick = { view = SkyListView.PASSES },
+                        label = { Text("Passes") })
+                    FilterChip(selected = view == SkyListView.SATELLITES, onClick = { view = SkyListView.SATELLITES },
+                        label = { Text("Satellites") })
                 }
-                if (mode == ListMode.UPCOMING || mode == ListMode.PASSES || mode == ListMode.NOW) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = radioProfilesOnly, onClick = { radioProfilesOnly = true },
-                            label = { Text("Radio profiles") })
-                        FilterChip(selected = !radioProfilesOnly, onClick = { radioProfilesOnly = false },
-                            label = { Text("All orbits") })
+                Text("Decoder support", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = decodableOnly, onClick = { decodableOnly = true },
+                        label = { Text("Decodable") })
+                    FilterChip(selected = !decodableOnly, onClick = { decodableOnly = false },
+                        label = { Text("All satellites") })
+                }
+                Text("Decodable = supported FM audio or AX.25 packets. Reception also needs a current signed catalog, a pass, and a signal.",
+                    style = MaterialTheme.typography.bodySmall)
+                if (view == SkyListView.PASSES) {
+                    Text("Pass time", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = passTimeView == PassTimeView.UPCOMING,
+                            onClick = { passTimeView = PassTimeView.UPCOMING }, label = { Text("Now & next") })
+                        FilterChip(selected = passTimeView == PassTimeView.FULL_DAY,
+                            onClick = { passTimeView = PassTimeView.FULL_DAY }, label = { Text("Whole day") })
+                        FilterChip(selected = passTimeView == PassTimeView.IN_SIGHT,
+                            onClick = { passTimeView = PassTimeView.IN_SIGHT }, enabled = dayOffset == 0,
+                            label = { Text("Above horizon now") })
                     }
-                    if (radioProfilesOnly) Text("Configured downlinks; reception still needs current elements and a real signal.",
+                    Text(when (passTimeView) {
+                        PassTimeView.UPCOMING -> if (dayOffset == 0) "Passes underway or still ahead today."
+                            else "Upcoming passes on the selected day."
+                        PassTimeView.FULL_DAY -> "Every predicted pass on the selected day, including earlier passes."
+                        PassTimeView.IN_SIGHT -> "Predicted above your horizon right now; this does not confirm a transmission."
+                    }, style = MaterialTheme.typography.bodySmall)
+                    if (dayOffset > 0) Text("Above horizon now is available for Today.",
+                        style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text("Browse satellite records, including satellites with no predicted pass on this day.",
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (mode == ListMode.UPCOMING && observer != null) {
-                    Text(if (day == now.atZone(zone).toLocalDate())
-                        "${shownPasses.size} ${if (radioProfilesOnly) "radio-profile " else ""}passes underway or ahead today" + if (schedule?.isComplete == true) "" else " so far"
-                    else "${shownPasses.size} ${if (radioProfilesOnly) "radio-profile " else ""}passes on this future day" + if (schedule?.isComplete == true) "" else " so far",
+                if (view == SkyListView.PASSES && observer != null) {
+                    Text("${shownPasses.size} passes ${if (decodableOnly) "for decodable satellites " else ""}in this view" +
+                        if (schedule?.isComplete == true) "" else " so far",
                         style = MaterialTheme.typography.bodySmall)
                 }
                 if (priorityRunning) Text("Calculating passes for search matches…")
                 if (priorityLimited) Text("Many satellites match. Refine the search to calculate all matching passes first.")
             }
         }
-        if (mode == ListMode.UPCOMING || mode == ListMode.PASSES || mode == ListMode.NOW) {
+        if (view == SkyListView.PASSES) {
             if (observer == null) item { Text("Choose a location to see the day schedule.") }
             else if (shownPasses.isEmpty()) item {
                 Text(when {
-                    searchHasOnlyDateLimitedRecords -> "Predictions stop from the source-reported decay date. Choose All to view historical records."
-                    schedule?.isComplete != true -> if (radioProfilesOnly) "Calculating radio-profile passes…" else "Calculating passes…"
+                    searchHasOnlyDateLimitedRecords -> "Predictions stop from the source-reported decay date. Choose Satellites to view historical records."
+                    schedule?.isComplete != true -> if (decodableOnly) "Calculating passes for decodable satellites…" else "Calculating passes…"
                     query.isNotBlank() -> "No passes match this search and view."
-                    radioProfilesOnly -> "No radio-profile passes in this view. Choose All orbits for other predictions."
-                    mode == ListMode.NOW -> "No satellites are in sight now."
-                    mode == ListMode.UPCOMING && day == now.atZone(zone).toLocalDate() -> "No upcoming passes remain today."
+                    decodableOnly -> "No passes for decodable satellites in this view. Choose All satellites for other predictions."
+                    passTimeView == PassTimeView.IN_SIGHT -> "No satellites are predicted above your horizon now."
+                    passTimeView == PassTimeView.UPCOMING && day == now.atZone(zone).toLocalDate() -> "No upcoming passes remain today."
                     else -> "No passes predicted for this day."
                 })
             }
@@ -341,17 +365,18 @@ internal fun DayScheduleScreen(
                 Card(onClick = { onSatelliteSelected(entry.satellite.record) }, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(entry.satellite.record.name, fontWeight = FontWeight.Bold)
+                        DecoderSupportBadge(entry.satellite.record)
                         entry.satellite.record.orbitHistoryLabel(now)?.let {
                             Text(it, color = MaterialTheme.colorScheme.secondary)
                         }
                         if (!entry.satellite.record.isKnownDecayedAt(now) &&
                             !now.isBefore(entry.pass.aos) && now.isBefore(entry.pass.los)) {
-                            Text("In sight now", color = MaterialTheme.colorScheme.primary)
+                            Text("Above horizon now", color = MaterialTheme.colorScheme.primary)
                         }
                         Text(passWindowLabel(entry.pass, zone,
                             entry.satellite.record.dayPredictionStopsAtDecay(day, zone)))
                         Text("Peak ${"%.0f".format(Locale.US, entry.pass.maximumElevationDegrees)}° elevation")
-                        Text("NORAD ${entry.satellite.record.noradId} · ${if (entry.satellite.record.isKnownDecayedAt(now)) "Historical record" else if (entry.satellite.hasConfiguredDownlink) "Configured downlink" else "Tracking only"}")
+                        Text("NORAD ${entry.satellite.record.noradId}")
                         if (!isFreshWithin72Hours(entry.satellite.elements.epoch, now)) {
                             Text("Orbital elements older than 72 h · pass time may be inaccurate",
                                 color = MaterialTheme.colorScheme.error)
@@ -373,7 +398,8 @@ internal fun DayScheduleScreen(
                 Card(onClick = { onSatelliteSelected(satellite.record) }, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(satellite.record.name, fontWeight = FontWeight.Bold)
-                        Text("NORAD ${satellite.record.noradId} · ${if (satellite.record.isKnownDecayedAt(now)) "Historical record" else if (satellite.hasConfiguredDownlink) "Configured downlink" else if (satellite.hasPublicDownlink) "Public downlink, unsupported setup" else "Tracking only"}")
+                        DecoderSupportBadge(satellite.record)
+                        Text("NORAD ${satellite.record.noradId}")
                         satellite.record.orbitHistoryLabel(now)?.let {
                             Text(it, color = MaterialTheme.colorScheme.secondary)
                         }

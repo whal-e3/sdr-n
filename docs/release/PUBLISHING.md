@@ -1,13 +1,13 @@
 # Publishing OrbitScope
 
-Publication preparation, checked September 27, 2026. Start with Google Play's internal testing track, then closed testing where required. The app is experimental: physical RTL-SDR sample streaming passed, while real satellite voice/packet decoding and HackRF behavior remain unverified.
+Publication preparation, updated September 30, 2026. Start with Google Play's internal testing track, then closed testing where required. The app is experimental: physical RTL-SDR sample streaming passed, while real satellite voice/packet decoding and HackRF behavior remain unverified.
 
 ## Current release status
 
 | Item | Status |
 | --- | --- |
 | Android target | API 36; minimum API 29 (Android 10). |
-| App identity | OrbitScope; application ID `io.github.whal_e3.orbitscope` (debug suffix `.debug`); version `0.1.0`, code `1`. Confirm the permanent application ID before the first upload. Changing it creates a separate installation and does not preserve the existing phone's private catalog/settings automatically. |
+| App identity | OrbitScope; application ID `io.github.whal_e3.orbitscope` (debug suffix `.debug`); working release `0.1.1`, code `2`. Version `0.1.0` / code `1` was published to internal testing on September 29 and the owner confirmed Play installation and basic operation. The permanent application ID is fixed. Changing it creates a separate installation and does not preserve the existing phone's private catalog/settings automatically. |
 | Catalog for new installations | Blocked for satellite reception: the bundled historical demo disables reception and `catalogBaseUrl` is empty by default. The locally installed signed cache is not part of the APK/AAB and will expire. A reviewed update source and public verification key must be configured and tested before advertising satellite reception. |
 | ISS voice repeater | The current curated profiles do not enable the 437.800 MHz FM repeater. A reviewed, signed catalog update is needed for that downlink. |
 | Upload signing | Persistent RSA-4096 upload key created privately outside the repository; signed APK/AAB generated and verified. Windows password backup uses user-bound DPAPI. See [signing and backup](SIGNING.md); an off-device encrypted backup still needs the owner. |
@@ -63,7 +63,7 @@ Signed local candidates are for testing. Final privacy/contact details and the a
 6. If the personal account was created after November 13, 2023, run the required closed test with at least 12 testers continuously opted in for 14 days, then apply for production access. Internal testing does not satisfy that requirement.
 7. Publish production after the account gates, release checks and declared functionality are ready. Store approval and public rollout are separate from building an AAB.
 
-The owner must sign in to Play Console and supply the account/listing information. No store upload or rollout has been performed during this preparation.
+The owner has completed account registration and published version 0.1.0 / code 1 to internal testing. The owner must supply the remaining listing/contact/privacy information in Play Console. Version 0.1.1 / code 2 has not been uploaded or rolled out.
 
 ## Alternative: GitHub Releases
 

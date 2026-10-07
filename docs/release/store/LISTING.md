@@ -17,6 +17,12 @@ passes for your observer location. Enter coordinates, select a point on the
 offline world map, or allow Android to supply your location. Import orbital
 elements with the system file picker, or look up a satellite by NORAD ID.
 
+Clear decoder badges distinguish configured FM audio or AX.25 packet downlinks
+from tracking-only satellites. Browse satellites or passes, filter by decoder
+support, and choose passes underway, the whole day, or above your horizon now.
+A Decodable label describes supported configuration; it does not confirm a
+transmission, reception availability, or a successful decode.
+
 Inspect live USB IQ samples with separate spectrum, waterfall, waveform and
 constellation tabs. The independent SDR tester checks sample streaming before
 a satellite pass, without requiring a satellite signal. A clearly labeled

@@ -47,6 +47,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import org.satelliteeavesdropper.app.DecoderSupportBadge
 import org.satelliteeavesdropper.app.OrbitColors
 import org.satelliteeavesdropper.app.data.CatalogLoadResult
 import org.satelliteeavesdropper.app.data.CatalogSource
@@ -75,7 +76,7 @@ internal fun GlobeScreen(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val records = catalog?.manifest?.satellites.orEmpty()
     var query by rememberSaveable { mutableStateOf("") }
-    var radioProfilesOnly by rememberSaveable { mutableStateOf(true) }
+    var decodableOnly by rememberSaveable { mutableStateOf(true) }
     var aboveHorizonOnly by rememberSaveable { mutableStateOf(false) }
     var liveNow by remember { mutableStateOf(Instant.now()) }
     var previewAnchorMillis by rememberSaveable { mutableStateOf(Instant.now().toEpochMilli()) }
@@ -112,7 +113,7 @@ internal fun GlobeScreen(
     var searchResults by remember { mutableStateOf<List<SatelliteRecord>>(emptyList()) }
     var searchCount by remember { mutableStateOf(0) }
     // Source historical cutoffs are UTC dates. Rebuild counts when preview crosses midnight.
-    LaunchedEffect(records, query, radioProfilesOnly, selectedRecord, at.atZone(ZoneOffset.UTC).toLocalDate()) {
+    LaunchedEffect(records, query, decodableOnly, selectedRecord, at.atZone(ZoneOffset.UTC).toLocalDate()) {
         engine = null
         scene = null
         candidates = null
@@ -121,7 +122,7 @@ internal fun GlobeScreen(
         delay(200L)
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             try {
-                val selection = selectGlobeCandidates(records, query, radioProfilesOnly, selectedRecord, at)
+                val selection = selectGlobeCandidates(records, query, decodableOnly, selectedRecord, at)
                 candidates = selection
                 engine = withContext(Dispatchers.Default) { GlobeSceneEngine(selection) }
                 if (selectedNoradId == null) {
@@ -231,27 +232,49 @@ internal fun GlobeScreen(
         }
         OutlinedTextField(value = query, onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth().testTag("globe-search"), singleLine = true,
-            label = { Text("Search every orbit by name or NORAD ID") },
+            label = { Text("Search all satellites by name or NORAD ID") },
             trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("Clear") } })
         if (query.isNotBlank()) {
             Text("$searchCount catalog matches · showing first ${searchResults.size}",
                 style = MaterialTheme.typography.labelSmall, color = OrbitColors.muted)
+            Text("Search includes all satellites. Your selection stays available across globe filters.",
+                style = MaterialTheme.typography.labelSmall, color = OrbitColors.muted)
             searchResults.forEach { record ->
                 TextButton(onClick = { onSelectionChanged(record.noradId); playing = false },
                     modifier = Modifier.fillMaxWidth()) {
-                    Text("${record.name} · ${record.noradId}" +
-                        if (record.isKnownDecayedAt(at)) " · historical" else "")
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${record.name} · ${record.noradId}" +
+                            if (record.isKnownDecayedAt(at)) " · historical" else "")
+                        DecoderSupportBadge(record)
+                    }
                 }
             }
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = radioProfilesOnly, onClick = { radioProfilesOnly = true },
-                label = { Text("Radio profiles") })
-            FilterChip(selected = !radioProfilesOnly, onClick = { radioProfilesOnly = false },
-                label = { Text("All orbits") })
-            FilterChip(selected = aboveHorizonOnly,
-                onClick = { aboveHorizonOnly = !aboveHorizonOnly }, enabled = observer != null,
-                label = { Text("Above horizon") })
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Decoder support", style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = decodableOnly, onClick = { decodableOnly = true },
+                    modifier = Modifier.testTag("globe-filter-decodable"),
+                    label = { Text("Decodable") })
+                FilterChip(selected = !decodableOnly, onClick = { decodableOnly = false },
+                    modifier = Modifier.testTag("globe-filter-all-satellites"),
+                    label = { Text("All satellites") })
+            }
+            Text("Decodable means a supported FM audio or AX.25 configuration. Satellite reception also needs a current signed catalog, a pass above your horizon and a usable signal.",
+                color = OrbitColors.muted, style = MaterialTheme.typography.bodySmall)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Visibility", style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = !aboveHorizonOnly, onClick = { aboveHorizonOnly = false },
+                    modifier = Modifier.testTag("globe-filter-all-positions"),
+                    label = { Text("All positions") })
+                FilterChip(selected = aboveHorizonOnly, onClick = { aboveHorizonOnly = true },
+                    enabled = observer != null, modifier = Modifier.testTag("globe-filter-above-horizon"),
+                    label = { Text("Above horizon") })
+            }
+            if (observer == null) Text("Set your location to filter satellites above your horizon.",
+                color = OrbitColors.muted, style = MaterialTheme.typography.bodySmall)
         }
         if (engine == null && records.isNotEmpty() && error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
         val displayed = scene
@@ -272,6 +295,8 @@ internal fun GlobeScreen(
                 if (isPreview) TextButton(onClick = ::returnToLive) { Text("Back to live") }
             }
         }
+        Text("Filled diamond: Decodable · hollow circle: Tracking only.",
+            color = OrbitColors.muted, style = MaterialTheme.typography.labelSmall)
         Text("${displayed?.markers?.size ?: 0} predicted positions · ${candidates?.records?.size ?: 0} sampled / " +
             "${candidates?.matchingCount ?: 0} matching orbits · ${records.size} catalog records",
             color = OrbitColors.muted, style = MaterialTheme.typography.labelSmall)
@@ -326,6 +351,7 @@ internal fun GlobeScreen(
                 Text("SELECTED SATELLITE", color = OrbitColors.cyan, style = MaterialTheme.typography.labelSmall)
                 Text(selectedRecord.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("NORAD ${selectedRecord.noradId}")
+                DecoderSupportBadge(selectedRecord)
                 if (selectedRecord.isKnownDecayedAt(at)) Text("Source-dated historical record: position withheld at this time.", color = OrbitColors.amber)
                 if (!selectedRecord.isKnownDecayedAt(at)) displayed?.selectedError?.let { Text(it, color = OrbitColors.amber) }
                 val marker = displayed?.markers?.firstOrNull { it.noradId == selectedNoradId }

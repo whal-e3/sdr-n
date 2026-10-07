@@ -336,3 +336,32 @@ The adaptive shell selects rail or bottom navigation from current constraints, c
 
 Signed APK SHA-256: `4d310aa91d96598a7c6f32d3ff1be78ca4ffca5dfe3e9f42a65bc74c987d64b7`.
 Signed AAB SHA-256: `801253cf25430f8ed85385857f1b77802ac514641a3ff1283c356ed6392da044`.
+
+## Decoder support and browsing controls — September 30, 2026
+
+Working update: **OrbitScope 0.1.1 / version code 2**, application ID `io.github.whal_e3.orbitscope`. Version 0.1.0 / code 1 remains the published internal test; the owner reported successful Play installation and basic operation. Version 2 has not been uploaded.
+
+Sky now separates **View** (Passes / Satellites), **Decoder support** (Decodable / All satellites), and **Pass time** (Now & next / Whole day / Above horizon now). Decoder badges distinguish FM audio, AX.25 packets, unsupported downlinks, and missing radio metadata. Globe markers use filled diamonds for supported decoder configurations and hollow circles for tracking only. Capability labels do not establish transmission, reception readiness, or successful decoding; existing signature, freshness, visibility and USB gates remain in place.
+
+Runtime device: Android 16 / API 36 x86_64 emulator, **16,384-byte pages**, tested at **320 dp width** (720 × 1620 pixels, density 360). No physical phone was connected to ADB for this update. The four-record Android fixture uses explicitly synthetic cached passes and a manual Yongin observer; it neither replaces the installed catalog nor starts reception. It tests browsing/filter behavior, not orbit propagation or RF performance.
+
+| Check | Result | Evidence / limit |
+| --- | --- | --- |
+| Stable source build | Passed | Debug app, Android test APK, signed release APK and AAB built successfully. An early parallel build used an older main-class snapshot and failed to resolve the newly added marker flag; the stable-source rerun passed. |
+| JVM regressions | Passed | **207 tests across 38 suites**, zero failures/errors/skips. Includes seven decoder-classification tests and a globe marker/filter regression. Classification uses the same receiver-configuration predicate as the Decodable filter. |
+| Satellite-list filtering and badges | Passed | Actual touch-based Android test scanned all four fixture records, verified their exact badges, and checked that switching back to Decodable excludes unsupported and metadata-free records. |
+| Pass-time and decoder filters | Passed | Actual touches verified Whole day, Now & next, and Above horizon now against the fixture; decoder selection remained independent when changing views. |
+| Future dates | Passed | Moving to Tomorrow from Above horizon now selected Whole day, disabled current-horizon selection, retained all future fixture passes, and restored availability on Today. Final complete class run: **OK (3 tests)** in 81.934 seconds. |
+| Compact screen with larger text | Passed | Satellite filter/badge regression repeated at **font scale 1.3**, still 320 dp wide: **OK (1 test)** in 23.939 seconds. Control groups wrap using FlowRow. |
+| Signed release UI | Passed | Installed release APK and cold launched successfully (`Status: ok`, 3185 ms; a later cold launch took 1320 ms). Visually checked grouped list/globe controls, ISS's combined FM/AX.25 badge, Meteor's tracking-only badge/reason in Target, and filled-diamond/hollow-circle globe markers. The installed source was the historical demo; reception stayed disabled. |
+| Earlier screen-test attempts | Failed | Cold boots produced system-service ANRs and a System UI dialog that blocked the fixture. Subsequent harness failures involved stale accessibility caches, incomplete scroll scans, and a card title clipped above the viewport. Fixed the helper to address the tagged list, await scrolling/stable bounds, clear the cache on API 34+, and associate each exact badge with its card's name or unique NORAD ID. The final class and larger-text rerun passed. |
+| App crash / ANR inspection | Passed | Final ADB crash buffer was empty. Collected logcat contained no OrbitScope fatal exception, ANR or native fatal signal. Initial emulator System UI/Google-service ANRs are recorded separately; their cause was not attributed to OrbitScope. |
+| Release lint | Passed | **0 errors, 13 warnings, 3 hints**. This is not a warning-free result. |
+| Signing and packaging | Passed | Bundletool validation passed; bundle manifest reports code 2. APK certificate matches the existing upload certificate; APK ZIP alignment passed. All eight packaged native-library copies passed 16 KB LOAD/RELRO checks. Direct verified JarFile reading checked **224 signed AAB payload entries, zero unsigned entries**, with the expected upload certificate. Jarsigner also verified the archive but reported self-signed/no-timestamp and streaming manifest-order warnings; the full-entry verification used JarFile. |
+| New-build phone / USB / real reception | Not testable | No physical phone or SDR was attached to this test environment. Previous A30 RTL-SDR sample-path evidence is recorded above and was not repeated. Real satellite voice/packet decoding and HackRF hardware behavior remain unverified. |
+| Ongoing catalog updates | Not testable | Default `catalogBaseUrl` remains empty. New installations use the unsigned historical demo and cannot start satellite reception. Raw Space-Track imports support tracking only. A reviewed current signed catalog/update source is still required before advertising satellite reception. |
+
+Detailed emulator logs, screenshots, instrumentation output and static packaging evidence are in the ignored local directory `app/build/reports/decoder-ui/`. The release bundle is also preserved as `app/build/outputs/bundle/release/orbitscope-0.1.1.aab`; the version 0.1.0 bundle is preserved separately. These tests did not deploy a service or upload/roll out a Play release.
+
+Signed APK SHA-256: `40a94bff1f1920d34524639e5429d024e9f47baa1b808ace40c4a5cff91a8e37`.
+Signed AAB SHA-256: `b9703eb74ff42ee12f83b35b07fc961d0378c790f44850f1aa3a4215ca9883f1`.

@@ -56,6 +56,32 @@ class GlobeSceneEngineTest {
         assertEquals(listOf(selected), candidates.records)
     }
 
+    @Test fun markerDecoderSupportIsIndependentOfVisibilityAndPreservesSelectedFilterException() = runBlocking {
+        val unsupportedProfile = radioProfile.copy(id = "lrpt", decoderId = "METEOR_LRPT_80K")
+        val mixed = record(1, transmitters = listOf(unsupportedProfile, radioProfile))
+        val unsupported = record(2, transmitters = listOf(unsupportedProfile))
+        val missingMetadata = record(3)
+        val records = listOf(mixed, unsupported, missingMetadata)
+        val all = GlobeSceneEngine(GlobeCandidates(records, 3, 0)) {
+            fixedOrbit(negativeX = it.noradId != "2")
+        }.snapshot(now, observer, null, includePaths = false).markers.associateBy { it.noradId }
+
+        assertTrue(all.getValue("1").decodable)
+        assertFalse(all.getValue("1").aboveHorizon)
+        assertFalse(all.getValue("2").decodable)
+        assertTrue(all.getValue("2").aboveHorizon)
+        assertFalse(all.getValue("3").decodable)
+
+        val candidates = selectGlobeCandidates(records, "", true, missingMetadata, now)
+        assertEquals(1, candidates.matchingCount)
+        assertEquals(listOf("1", "3"), candidates.records.map { it.noradId })
+        val filtered = GlobeSceneEngine(candidates) { fixedOrbit(negativeX = true) }
+            .snapshot(now, observer, "3", aboveHorizonOnly = true, includePaths = false)
+        assertEquals(listOf("3"), filtered.markers.map { it.noradId })
+        assertFalse(filtered.markers.single().decodable)
+        assertFalse(filtered.markers.single().aboveHorizon)
+    }
+
     @Test fun historicalMatchesAreCountedSeparatelyAndSelectedHistoricalHasNoGeometry() = runBlocking {
         val historical = record(1, decayDate = "2026-09-27")
         val candidates = selectGlobeCandidates(listOf(historical, record(2)), "", false, historical, now)

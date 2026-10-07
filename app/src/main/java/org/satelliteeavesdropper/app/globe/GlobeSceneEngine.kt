@@ -139,13 +139,14 @@ internal class GlobeSceneEngine(
             context.ensureActive()
             val entries = prepared ?: records.map { record ->
                 context.ensureActive()
+                val decodable = record.transmitters.any { receiverConfigurationIssue(it) == null }
                 try {
                     val elements = record.orbitElements()
                         ?: throw IllegalArgumentException("Orbital elements are unavailable or invalid.")
-                    PreparedOrbit(record, elements, orbitFactory(elements), null)
+                    PreparedOrbit(record, elements, orbitFactory(elements), null, decodable)
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
-                    PreparedOrbit(record, null, null, failureMessage(error))
+                    PreparedOrbit(record, null, null, failureMessage(error), decodable)
                 }
             }.also { prepared = it }
             val markers = ArrayList<GlobeMarker>(entries.size)
@@ -172,7 +173,7 @@ internal class GlobeSceneEngine(
                     val look = observer?.let { orbit.lookFrom(it, at).also(::requireValidLook) }
                     val aboveHorizon = look?.elevationDegrees?.let { it >= 0.0 } ?: false
                     if (!aboveHorizonOnly || aboveHorizon || isSelected) {
-                        markers.add(GlobeMarker(record.noradId, record.name, position, aboveHorizon))
+                        markers.add(GlobeMarker(record.noradId, record.name, position, aboveHorizon, entry.decodable))
                     }
                     if (isSelected) {
                         selectedLook = look
@@ -234,6 +235,7 @@ private data class PreparedOrbit(
     val elements: OmmElements?,
     val orbit: SatelliteOrbit?,
     val error: String?,
+    val decodable: Boolean,
 )
 
 private fun requirePhysicalOrbit(position: EarthFixedPosition) {
